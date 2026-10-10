@@ -1,0 +1,15 @@
+import 'dart:io';
+import 'package:crypto/crypto.dart';
+
+abstract final class Sha256Util {
+  static Future<String> computeFileHash(File file) async {
+    if (!await file.exists()) return '';
+    final stream = file.openRead();
+    final digest = await sha256.bind(stream).first;
+    return digest.toString();
+  }
+
+  static String computeBytesHash(List<int> bytes) {
+    return sha256.convert(bytes).toString();
+  }
+}
