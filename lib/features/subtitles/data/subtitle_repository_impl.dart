@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 
 import '../../../core/constants/app_constants.dart';
@@ -8,8 +10,9 @@ import '../domain/entities/subtitle_track.dart';
 import '../domain/subtitle_selection_policy.dart';
 import 'subtitle_language_detector.dart';
 import 'subtitle_parser.dart';
+import '../domain/repositories/subtitle_repository.dart';
 
-class SubtitleRepositoryImpl implements SubtitleTrackProvider {
+class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvider {
   SubtitleRepositoryImpl(
     this._dio, [
     SubtitleParser? parser,
@@ -24,6 +27,7 @@ class SubtitleRepositoryImpl implements SubtitleTrackProvider {
   final SubtitleLanguageDetector _languageDetector;
   final SubtitleSelectionPolicy _selectionPolicy;
 
+  @override
   Future<List<SubtitleTrack>> findSubtitleTracks(ResolvedSource source) async {
     final tracks = <SubtitleTrack>[];
 
@@ -183,18 +187,28 @@ class SubtitleRepositoryImpl implements SubtitleTrackProvider {
 
   Future<SubtitleDocument> fetchSubtitleDocument(SubtitleTrack track) async {
     try {
-      final response = await _dio.get<String>(track.uri.toString());
-      final body = response.data ?? '';
+      String body;
+      if (track.uri.isScheme('file')) {
+        body = await File(track.uri.toFilePath()).readAsString();
+      } else {
+        final response = await _dio.get<String>(track.uri.toString());
+        body = response.data ?? '';
+      }
+
+      final lang = _languageDetector.detectLanguage(
+        declaredLanguage: track.language,
+        sampleText: body.substring(0, body.length > 500 ? 500 : body.length),
+      );
 
       if (track.uri.path.endsWith('.ttml') ||
           body.contains('<tt') ||
           body.contains('<p begin=')) {
-        return _parser.parseTtmlDocument(body, language: track.language);
+        return _parser.parseTtmlDocument(body, language: lang);
       } else if (track.format == SubtitleFormat.webvtt ||
           body.contains('WEBVTT')) {
-        return _parser.parseVttDocument(body, language: track.language);
+        return _parser.parseVttDocument(body, language: lang);
       } else {
-        return _parser.parseSrtDocument(body, language: track.language);
+        return _parser.parseSrtDocument(body, language: lang);
       }
     } catch (_) {
       return SubtitleDocument(
@@ -208,6 +222,7 @@ class SubtitleRepositoryImpl implements SubtitleTrackProvider {
     }
   }
 
+  @override
   Future<List<TimedTextSegment>> fetchSubtitleSegments(
     SubtitleTrack track,
   ) async {

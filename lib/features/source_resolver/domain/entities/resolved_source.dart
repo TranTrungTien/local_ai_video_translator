@@ -98,6 +98,7 @@ class ResolvedSource {
     this.failureReason,
     this.rejectionReasons = const {},
     this.diagnostics = const [],
+    this.manualSubtitlePath,
   });
 
   final String input;
@@ -116,9 +117,50 @@ class ResolvedSource {
   final String? failureReason;
   final Map<String, String> rejectionReasons;
   final List<String> diagnostics;
+  final String? manualSubtitlePath;
 
   Uri get uri => finalUri;
   Map<String, String> get headers => requestContext.headers;
   bool get supportsFullAi =>
       capability.audioAccessible && capability.positionReadable;
+
+  ResolvedSource copyWith({
+    String? input,
+    Uri? normalizedUri,
+    Uri? finalUri,
+    MediaKind? kind,
+    PlaybackMode? playbackMode,
+    DiscoveryMethod? discoveryMethod,
+    SourceCapability? capability,
+    RequestContext? requestContext,
+    List<Uri>? redirectChain,
+    List<Uri>? iframeChain,
+    List<MediaCandidate>? candidates,
+    MediaCandidate? selectedCandidate,
+    Duration? resolutionDuration,
+    String? failureReason,
+    Map<String, String>? rejectionReasons,
+    List<String>? diagnostics,
+    String? manualSubtitlePath,
+  }) {
+    return ResolvedSource(
+      input: input ?? this.input,
+      normalizedUri: normalizedUri ?? this.normalizedUri,
+      finalUri: finalUri ?? this.finalUri,
+      kind: kind ?? this.kind,
+      playbackMode: playbackMode ?? this.playbackMode,
+      discoveryMethod: discoveryMethod ?? this.discoveryMethod,
+      capability: capability ?? this.capability,
+      requestContext: requestContext ?? this.requestContext,
+      redirectChain: redirectChain ?? this.redirectChain,
+      iframeChain: iframeChain ?? this.iframeChain,
+      candidates: candidates ?? this.candidates,
+      selectedCandidate: selectedCandidate ?? this.selectedCandidate,
+      resolutionDuration: resolutionDuration ?? this.resolutionDuration,
+      failureReason: failureReason ?? this.failureReason,
+      rejectionReasons: rejectionReasons ?? this.rejectionReasons,
+      diagnostics: diagnostics ?? this.diagnostics,
+      manualSubtitlePath: manualSubtitlePath ?? this.manualSubtitlePath,
+    );
+  }
 }

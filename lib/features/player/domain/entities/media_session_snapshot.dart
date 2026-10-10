@@ -11,6 +11,7 @@ class MediaSessionSnapshot {
     required this.buffered,
     required this.status,
     required this.playbackRate,
+    this.volume = 100.0,
     this.activeVideoTrack,
     this.activeAudioTrack,
     this.activeSubtitleTrack,
@@ -26,6 +27,7 @@ class MediaSessionSnapshot {
   final Duration buffered;
   final PlayerStatus status;
   final double playbackRate;
+  final double volume;
   final VideoTrack? activeVideoTrack;
   final AudioTrack? activeAudioTrack;
   final PlayerSubtitleTrack? activeSubtitleTrack;
@@ -50,6 +52,7 @@ class MediaSessionSnapshot {
     Duration? buffered,
     PlayerStatus? status,
     double? playbackRate,
+    double? volume,
     VideoTrack? activeVideoTrack,
     AudioTrack? activeAudioTrack,
     PlayerSubtitleTrack? activeSubtitleTrack,
@@ -65,6 +68,7 @@ class MediaSessionSnapshot {
       buffered: buffered ?? this.buffered,
       status: status ?? this.status,
       playbackRate: playbackRate ?? this.playbackRate,
+      volume: volume ?? this.volume,
       activeVideoTrack: activeVideoTrack ?? this.activeVideoTrack,
       activeAudioTrack: activeAudioTrack ?? this.activeAudioTrack,
       activeSubtitleTrack: activeSubtitleTrack ?? this.activeSubtitleTrack,
@@ -82,5 +86,6 @@ class MediaSessionSnapshot {
     buffered: Duration.zero,
     status: PlayerStatus.idle,
     playbackRate: 1.0,
+    volume: 100.0,
   );
 }

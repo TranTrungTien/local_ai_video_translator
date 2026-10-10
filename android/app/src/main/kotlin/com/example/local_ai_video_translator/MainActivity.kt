@@ -1,5 +1,8 @@
 package com.example.local_ai_video_translator
 
+import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -24,6 +27,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         const val MEDIA_EVENTS_CHANNEL = "local_ai_video_translator/media_events"
         const val NATIVE_RESOLVER_CHANNEL = "local_ai_video_translator/native_resolver"
+        const val REQUEST_MEDIA_PROJECTION = 1001
 
         private var eventSink: EventChannel.EventSink? = null
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -34,6 +38,8 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+    private var pendingAudioResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -55,6 +61,24 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler(object : MethodChannel.MethodCallHandler {
                 override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
                     when (call.method) {
+                        "startAudioCapture" -> {
+                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                                result.error("UNSUPPORTED", "Audio capture requires Android 10+", null)
+                                return
+                            }
+                            pendingAudioResult = result
+                            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                            startActivityForResult(mediaProjectionManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION)
+                        }
+
+                        "stopAudioCapture" -> {
+                            val intent = Intent(this@MainActivity, AudioCaptureService::class.java).apply {
+                                action = AudioCaptureService.ACTION_STOP
+                            }
+                            startService(intent)
+                            result.success(true)
+                        }
+
                         "verifyCandidate" -> {
                             val urlStr = call.argument<String>("url")
                             val headersMap: Map<String, String>? = call.argument("headers")
@@ -140,6 +164,29 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             })
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_MEDIA_PROJECTION) {
+            if (resultCode == RESULT_OK && data != null) {
+                val intent = Intent(this, AudioCaptureService::class.java).apply {
+                    action = AudioCaptureService.ACTION_START
+                    putExtra(AudioCaptureService.EXTRA_RESULT_CODE, resultCode)
+                    putExtra(AudioCaptureService.EXTRA_DATA, data)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+                pendingAudioResult?.success(true)
+            } else {
+                pendingAudioResult?.error("PERMISSION_DENIED", "MediaProjection permission denied", null)
+            }
+            pendingAudioResult = null
+        } else {
+            super.onActivityResult(requestCode, resultCode, data)
+        }
     }
 }
 

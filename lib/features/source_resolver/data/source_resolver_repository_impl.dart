@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 
 import '../../../core/constants/app_constants.dart';
@@ -20,6 +23,9 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
   final HtmlMediaParser _parser;
   final CandidateVerifier _verifier;
 
+  /// Limit for reading probe data (HTML/Manifests) to prevent OOM
+  static const int _kMaxProbeBytes = 1 * 1024 * 1024; // 1 MB
+
   @override
   Future<ResolvedSource> resolve(String input) async {
     final stopwatch = Stopwatch()..start();
@@ -31,21 +37,28 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     final normalized = _normalizeInput(trimmed);
     final diagnostics = <String>[];
     final rejectionReasons = <String, String>{};
+    final cancelToken = CancelToken();
 
-    final result = await _resolveInternal(
-      normalized,
-      originInput: trimmed,
-      depth: 0,
-      visited: <String>{},
-      redirectChain: <Uri>[normalized],
-      iframeChain: <Uri>[],
-      diagnostics: diagnostics,
-      rejectionReasons: rejectionReasons,
-      stopwatch: stopwatch,
-    );
+    try {
+      final result = await _resolveInternal(
+        normalized,
+        originInput: trimmed,
+        depth: 0,
+        visited: <String>{},
+        redirectChain: <Uri>[normalized],
+        iframeChain: <Uri>[],
+        diagnostics: diagnostics,
+        rejectionReasons: rejectionReasons,
+        stopwatch: stopwatch,
+        cancelToken: cancelToken,
+      );
 
-    stopwatch.stop();
-    return result;
+      stopwatch.stop();
+      return result;
+    } catch (e) {
+      cancelToken.cancel('Resolution failed or aborted');
+      rethrow;
+    }
   }
 
   Uri _normalizeInput(String input) {
@@ -71,6 +84,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     required List<String> diagnostics,
     required Map<String, String> rejectionReasons,
     required Stopwatch stopwatch,
+    required CancelToken cancelToken,
   }) async {
     if (depth > AppConstants.maxIframeDepth) {
       throw const ResolutionException('Maximum iframe depth reached.');
@@ -134,19 +148,14 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     }
 
     try {
-      final response = await _dio.get<String>(
-        currentUri.toString(),
-        options: Options(responseType: ResponseType.plain),
-      );
-      final finalUri = response.realUri;
+      final probeResult = await _probe(currentUri, cancelToken);
+      final finalUri = probeResult.finalUri;
       if (finalUri != currentUri && !redirectChain.contains(finalUri)) {
         redirectChain.add(finalUri);
       }
 
-      final contentType =
-          response.headers.value(Headers.contentTypeHeader)?.toLowerCase() ??
-          '';
-      final body = response.data ?? '';
+      final contentType = probeResult.contentType;
+      final body = probeResult.body;
 
       // Step 2: Response signature classification
       final byResponse = _detectResponse(finalUri, contentType, body);
@@ -176,6 +185,10 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
           resolutionDuration: stopwatch.elapsed,
           diagnostics: diagnostics,
         );
+      }
+
+      if (body.isEmpty) {
+        throw const ResolutionException('Empty response or non-HTML content.');
       }
 
       // Step 3: Static HTML inspection
@@ -227,10 +240,11 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
             diagnostics: diagnostics,
             rejectionReasons: rejectionReasons,
             stopwatch: stopwatch,
+            cancelToken: cancelToken,
           );
         } on ResolutionException {
           // Continue to next iframe
-        } on DioException {
+        } catch (e) {
           // Continue to next iframe
         }
       }
@@ -265,9 +279,64 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
         diagnostics: diagnostics,
       );
     } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
       throw ResolutionException('Could not load source page.', error);
     }
   }
+
+  Future<({Uri finalUri, String contentType, String body})> _probe(
+    Uri uri,
+    CancelToken cancelToken,
+  ) async {
+    final response = await _dio.get<ResponseBody>(
+      uri.toString(),
+      options: Options(responseType: ResponseType.stream),
+      cancelToken: cancelToken,
+    );
+
+    final contentType =
+        response.headers.value(Headers.contentTypeHeader)?.toLowerCase() ?? '';
+    final finalUri = response.realUri;
+
+    // Check if it's likely a direct media stream
+    final isMedia = contentType.startsWith('video/') ||
+        contentType.contains('mpegurl') ||
+        contentType.contains('dash+xml') ||
+        contentType.contains('application/octet-stream');
+
+    final isManifest = contentType.contains('mpegurl') || contentType.contains('dash+xml');
+
+    if (isMedia && !isManifest) {
+      // It's a video file, don't read body to avoid OOM
+      return (finalUri: finalUri, contentType: contentType, body: '');
+    }
+
+    // Read limited body for HTML/Manifest parsing
+    final builder = BytesBuilder(copy: false);
+    int totalRead = 0;
+
+    try {
+      await for (final chunk in response.data!.stream) {
+        builder.add(chunk);
+        totalRead += chunk.length;
+        if (totalRead >= _kMaxProbeBytes) {
+          break;
+        }
+      }
+    } catch (e) {
+      // Partial read is better than nothing for probing
+    }
+
+    final bodyBytes = builder.takeBytes();
+    final body = utf8.decode(bodyBytes, allowMalformed: true);
+
+    return (
+      finalUri: finalUri,
+      contentType: contentType,
+      body: body,
+    );
+  }
+
 
   MediaKind? _detectResponse(Uri uri, String contentType, String body) {
     final pathKind = _toMediaKind(MediaUrl.classify(uri.toString()));

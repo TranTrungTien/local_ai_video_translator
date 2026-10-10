@@ -24,10 +24,6 @@ class PcmChunk {
   final List<int> bytes;
 }
 
-abstract interface class SubtitleTrackProvider {
-  Future<List<TimedTextSegment>> findExistingSubtitles(String targetLanguage);
-}
-
 abstract interface class SpeechToTextEngine {
   bool get installed;
   Future<List<TimedTextSegment>> transcribe(Stream<PcmChunk> audio);

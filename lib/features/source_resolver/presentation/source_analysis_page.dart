@@ -187,6 +187,11 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                     const SizedBox(height: 16),
                     _buildSpecRow('Tiêu đề:', _resolvedSource?.input ?? 'Direct Stream Video'),
                     _buildSpecRow('Định dạng:', 'm3u8 (HLS Adaptive Stream)'),
+                    if (_resolvedSource?.manualSubtitlePath != null)
+                      _buildSpecRow(
+                        'Phụ đề:',
+                        'Tệp thủ công (${_resolvedSource!.manualSubtitlePath!.split(RegExp(r'[/\\]')).last})',
+                      ),
                     _buildSpecRow('Codec Video:', 'H.264 / AVC Main Profile'),
                     _buildSpecRow('Âm thanh:', 'AAC 48kHz Stereo (16-bit)'),
                     _buildSpecRow('CORS & Range:', 'Chấp nhận Byte Ranges (Support AI Buffer)'),

@@ -242,6 +242,13 @@ class NativeMediaSession implements MediaSession {
   }
 
   @override
+  Future<void> setVolume(double volume) async {
+    if (_player == null) return;
+    await _player!.setVolume(volume);
+    _updateSnapshot(_snapshot.copyWith(volume: volume));
+  }
+
+  @override
   Future<void> close() async {
     for (final sub in _subscriptions) {
       await sub.cancel();

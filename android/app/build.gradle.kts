@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.example.local_ai_video_translator"
     compileSdk = 35
-    buildToolsVersion = "36.0.0"
+    buildToolsVersion = "35.0.0"
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

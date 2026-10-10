@@ -11,6 +11,7 @@ abstract interface class MediaSession {
   Future<void> pause();
   Future<void> seek(Duration position);
   Future<void> setPlaybackRate(double rate);
+  Future<void> setVolume(double volume);
   Future<void> selectVideoTrack(VideoTrack track);
   Future<void> selectAudioTrack(AudioTrack track);
   Future<void> selectSubtitleTrack(PlayerSubtitleTrack? track);

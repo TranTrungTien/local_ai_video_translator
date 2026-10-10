@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:typed_data';
+
+import 'package:flutter/services.dart';
 
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
@@ -10,6 +11,62 @@ abstract interface class PcmAudioExtractor {
     ResolvedSource source, {
     Duration? startPosition,
   });
+}
+
+class NativePcmAudioExtractor implements PcmAudioExtractor {
+  NativePcmAudioExtractor();
+
+  static const _methodChannel = MethodChannel('local_ai_video_translator/native_resolver');
+  static const _eventChannel = EventChannel('local_ai_video_translator/media_events');
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Stream<PcmChunk> extractPcmStream(
+    ResolvedSource source, {
+    Duration? startPosition,
+  }) async* {
+    // 1. Request MediaProjection and start native service
+    final started = await _methodChannel.invokeMethod<bool>('startAudioCapture');
+    if (started != true) {
+      throw Exception('Could not start native audio capture');
+    }
+
+    final controller = StreamController<PcmChunk>();
+
+    // 2. Listen to audio chunks from EventChannel
+    int? firstTimestamp;
+
+    final subscription = _eventChannel.receiveBroadcastStream().listen((event) {
+      if (event is Map && event['type'] == 'audio_chunk') {
+        final data = event['data'] as Uint8List;
+        final sampleRate = event['sampleRate'] as int;
+        final channels = event['channels'] as int;
+        final timestamp = event['timestamp'] as int;
+
+        // Calculate PTS based on native timestamp comparison
+        firstTimestamp ??= timestamp;
+        final elapsedMs = timestamp - firstTimestamp!;
+        final currentPts = (startPosition ?? Duration.zero) + Duration(milliseconds: elapsedMs);
+
+        controller.add(PcmChunk(
+          pts: currentPts,
+          sampleRate: sampleRate,
+          channels: channels,
+          bytes: data,
+        ));
+      }
+    });
+
+    try {
+      yield* controller.stream;
+    } finally {
+      await subscription.cancel();
+      await _methodChannel.invokeMethod('stopAudioCapture');
+      await controller.close();
+    }
+  }
 }
 
 class DefaultPcmAudioExtractor implements PcmAudioExtractor {

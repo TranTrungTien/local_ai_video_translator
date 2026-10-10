@@ -39,4 +39,11 @@ class SourceResolverController extends AsyncNotifier<ResolvedSource?> {
   }
 
   void reset() => state = const AsyncData(null);
+
+  void setManualSubtitle(String path) {
+    final current = state.value;
+    if (current != null) {
+      state = AsyncData(current.copyWith(manualSubtitlePath: path));
+    }
+  }
 }

@@ -10,6 +10,7 @@ import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
 import '../../source_resolver/presentation/source_resolver_controller.dart';
+import '../../../core/utils/shared_input_parser.dart';
 
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
@@ -37,12 +38,22 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   void _consumeSharedItems(List<SharedMediaFile> items) {
     if (items.isEmpty || !mounted) return;
-    final value = items.first.path.trim();
-    if (value.isNotEmpty) {
-      _controller.text = value;
-      unawaited(_resolve(value));
-    }
+
+    final rawPath = items.first.path;
+    final value = SharedInputParser.extract(rawPath);
+
+    // Reset so the same intent doesn't trigger again on rebuild
     ReceiveSharingIntent.instance.reset();
+
+    if (value == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không tìm thấy liên kết video hợp lệ.')),
+      );
+      return;
+    }
+
+    _controller.text = value;
+    unawaited(_resolve(value));
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -75,6 +86,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
     final path = result?.files.firstOrNull?.path;
     if (path != null && mounted) {
+      ref.read(sourceResolverControllerProvider.notifier).setManualSubtitle(path);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Đã chọn phụ đề: ${result?.files.first.name}'),

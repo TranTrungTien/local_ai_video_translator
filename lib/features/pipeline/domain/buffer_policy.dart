@@ -89,10 +89,12 @@ class AiBufferPolicy {
   AiWorkMode modeFor(AiBufferSnapshot snapshot, {double playbackRate = 1.0}) {
     final ahead = snapshot.subtitleAhead;
     if (ahead <= Duration.zero) return AiWorkMode.blocked;
-    if (ahead <= AppConstants.dangerBuffer * 6 * playbackRate)
+    if (ahead <= AppConstants.dangerBuffer * 6 * playbackRate) {
       return AiWorkMode.turbo;
-    if (ahead < AppConstants.targetSubtitleLookahead * playbackRate)
+    }
+    if (ahead < AppConstants.targetSubtitleLookahead * playbackRate) {
       return AiWorkMode.normal;
+    }
     if (ahead < const Duration(minutes: 5)) return AiWorkMode.eco;
     return AiWorkMode.paused;
   }
