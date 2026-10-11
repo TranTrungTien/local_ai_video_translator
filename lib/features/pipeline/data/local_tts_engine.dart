@@ -39,15 +39,15 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   }
 
   @override
-  Future<List<int>> synthesize(
+  Future<Uint8List> synthesize(
     String text, {
     required Duration targetDuration,
   }) async {
     final cleanText = text.trim();
-    if (cleanText.isEmpty) return const [];
+    if (cleanText.isEmpty) return Uint8List(0);
 
     final cached = _cache.get(cleanText);
-    if (cached != null) return cached;
+    if (cached != null) return Uint8List.fromList(cached);
 
     await _ensureInitialized();
     final session = _session;
@@ -184,17 +184,17 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
     'ỳ': 88, 'ý': 89, 'ỷ': 90, 'ỹ': 91, 'ỵ': 92,
   };
 
-  List<int> _float32ToPcm16(Float32List float32Data) {
+  Uint8List _float32ToPcm16(Float32List float32Data) {
     final pcm16Data = Int16List(float32Data.length);
     for (var i = 0; i < float32Data.length; i++) {
       // Clamp and scale to 16-bit range
       final sample = (float32Data[i] * 32767.0).clamp(-32768.0, 32767.0);
       pcm16Data[i] = sample.toInt();
     }
-    return pcm16Data.buffer.asUint8List().toList();
+    return pcm16Data.buffer.asUint8List();
   }
 
-  List<int> _generateMockAudio(Duration targetDuration) {
+  Uint8List _generateMockAudio(Duration targetDuration) {
     const sampleRate = 16000;
     const channels = 1;
     var targetMs = targetDuration.inMilliseconds;
@@ -202,11 +202,11 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
 
     final samplesNeeded = (sampleRate * targetMs) ~/ 1000;
     final bytes = Uint8List(samplesNeeded * 2 * channels);
-    for (var i = 0; i < bytes.length; i += 2) {
-      bytes[i] = 100;
-      bytes[i + 1] = 0;
+    // Fill with a low-level buzz instead of constant 100
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = (i % 2 == 0) ? 10 : 0;
     }
-    return bytes.toList();
+    return bytes;
   }
 
   void dispose() {

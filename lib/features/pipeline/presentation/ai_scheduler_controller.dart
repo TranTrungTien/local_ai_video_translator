@@ -92,45 +92,47 @@ class AiSchedulerState {
   }
 }
 
-class AiSchedulerController extends StateNotifier<AiSchedulerState> {
-  AiSchedulerController({
-    required SubtitleRepository subtitleRepository,
-    required SpeechToTextEngine sttEngine,
-    required TranslationEngine translationEngine,
-    required TextToSpeechEngine ttsEngine,
-    required PcmAudioExtractor audioExtractor,
-    required VoiceActivityDetector vadEngine,
-    required DubbingRepository dubbingRepository,
-    required DiagnosticsService diagnostics,
-    DeviceCapabilityProfile? deviceProfile,
-  }) : _subtitleRepository = subtitleRepository,
-       _sttEngine = sttEngine,
-       _translationEngine = translationEngine,
-       _ttsEngine = ttsEngine,
-       _audioExtractor = audioExtractor,
-       _vadEngine = vadEngine,
-       _dubbingRepository = dubbingRepository,
-       _diagnostics = diagnostics,
-       _deviceProfile = deviceProfile ?? DeviceCapabilityProfile.defaultProfile,
-       super(
-         const AiSchedulerState(
-           playbackPosition: Duration.zero,
-           subtitleReadyUntil: Duration.zero,
-           dubReadyUntil: Duration.zero,
-           workMode: AiWorkMode.normal,
-           activeSourceStrategy: 'Initializing...',
-         ),
-       );
+final aiSchedulerProvider =
+    NotifierProvider.autoDispose<AiSchedulerController, AiSchedulerState>(
+      AiSchedulerController.new,
+    );
 
-  final SubtitleRepository _subtitleRepository;
-  final SpeechToTextEngine _sttEngine;
-  final TranslationEngine _translationEngine;
-  final TextToSpeechEngine _ttsEngine;
-  final PcmAudioExtractor _audioExtractor;
-  final VoiceActivityDetector _vadEngine;
-  final DubbingRepository _dubbingRepository;
-  final DiagnosticsService _diagnostics;
-  final DeviceCapabilityProfile _deviceProfile;
+class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
+  @override
+  AiSchedulerState build() {
+    _subtitleRepository = ref.watch(subtitleRepositoryProvider);
+    _sttEngine = ref.watch(sttEngineProvider);
+    _translationEngine = ref.watch(translationEngineProvider);
+    _ttsEngine = ref.watch(ttsEngineProvider);
+    _audioExtractor = ref.watch(pcmAudioExtractorProvider);
+    _vadEngine = ref.watch(vadEngineProvider);
+    _dubbingRepository = ref.watch(dubbingRepositoryProvider);
+    _diagnostics = ref.watch(diagnosticsServiceProvider);
+    _deviceProfile = DeviceCapabilityProfile.defaultProfile;
+
+    ref.onDispose(() {
+      _activeToken?.cancel();
+      _generation++;
+    });
+
+    return const AiSchedulerState(
+      playbackPosition: Duration.zero,
+      subtitleReadyUntil: Duration.zero,
+      dubReadyUntil: Duration.zero,
+      workMode: AiWorkMode.normal,
+      activeSourceStrategy: 'Initializing...',
+    );
+  }
+
+  late final SubtitleRepository _subtitleRepository;
+  late final SpeechToTextEngine _sttEngine;
+  late final TranslationEngine _translationEngine;
+  late final TextToSpeechEngine _ttsEngine;
+  late final PcmAudioExtractor _audioExtractor;
+  late final VoiceActivityDetector _vadEngine;
+  late final DubbingRepository _dubbingRepository;
+  late final DiagnosticsService _diagnostics;
+  late final DeviceCapabilityProfile _deviceProfile;
 
   final TimelineSubtitleBuffer _timelineBuffer = TimelineSubtitleBuffer();
   final _policy = const AiBufferPolicy();
@@ -217,17 +219,32 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     final raw = await _subtitleRepository.fetchSubtitleSegments(track);
     if (_isStale(gen)) return;
 
-    final segments = translate
-        ? await _translationEngine.translate(raw, targetLanguage: AppConstants.targetLanguage)
-        : raw;
+    // Start from the cue nearest to the current playhead
+    final startIndex = raw.indexWhere((s) => s.end >= state.playbackPosition);
+    final startAt = startIndex < 0 ? 0 : startIndex;
 
-    if (_isStale(gen)) return;
-    _timelineBuffer.addSegments(segments);
+    // Process in batches of 20 segments to allow near-instant playback
+    for (var i = startAt; i < raw.length; i += 20) {
+      if (_isStale(gen)) return;
 
-    // Background synthesize for dubbing
-    _synthesizeBatch(segments, gen);
+      // Back-pressure: Don't get too far ahead of the playhead
+      await _waitUntilBufferNeeded(gen);
+      if (_isStale(gen)) return;
 
-    _updateBufferState();
+      final batch = raw.skip(i).take(20).toList();
+      final processedBatch = translate
+          ? await _translationEngine.translate(batch, targetLanguage: AppConstants.targetLanguage)
+          : batch;
+
+      if (_isStale(gen)) return;
+
+      _timelineBuffer.addSegments(processedBatch);
+
+      // Background synthesize only for the segments we just processed
+      unawaited(_synthesizeBatch(processedBatch, gen));
+
+      _updateBufferState();
+    }
   }
 
   Future<void> _synthesizeBatch(List<TimedTextSegment> segments, int gen) async {
@@ -338,15 +355,23 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
   }
 
   void handleSeek(Duration newPts) {
-    _diagnostics.log('AIScheduler', 'Seek to $newPts, re-initializing pipeline');
+    _diagnostics.log('AIScheduler', 'Seek to $newPts');
     final gen = _beginNewSession();
+
+    // Do not flush everything, only what is necessary
     _timelineBuffer.flushObsolete(newPts);
-    _dubbingRepository.clear(); // Simple flush for dubbing on seek
+    _dubbingRepository.clear();
     updatePlaybackPosition(newPts);
 
     final source = activeSource;
     if (source != null) {
-      unawaited(_runAudioSttPipeline(source, gen, startAt: newPts));
+      // If we are in STT mode, we must restart pipeline from new position
+      if (state.activeSourceStrategy.contains('AI Pipeline')) {
+        unawaited(_runAudioSttPipeline(source, gen, startAt: newPts));
+      } else {
+        // For subtitle tracks, re-trigger batch loading from new position
+        // This is handled by _loadSubtitleTrack logic in initialize
+      }
     }
   }
 
@@ -421,17 +446,4 @@ final dubbingRepositoryProvider = Provider<DubbingRepository>((ref) {
   return DubbingRepository();
 });
 
-final aiSchedulerProvider =
-    StateNotifierProvider.autoDispose<AiSchedulerController, AiSchedulerState>((ref) {
-      return AiSchedulerController(
-        subtitleRepository: ref.watch(subtitleRepositoryProvider),
-        sttEngine: ref.watch(sttEngineProvider),
-        translationEngine: ref.watch(translationEngineProvider),
-        ttsEngine: ref.watch(ttsEngineProvider),
-        audioExtractor: ref.watch(pcmAudioExtractorProvider),
-        vadEngine: ref.watch(vadEngineProvider),
-        dubbingRepository: ref.watch(dubbingRepositoryProvider),
-        diagnostics: ref.watch(diagnosticsServiceProvider),
-      );
-    });
 

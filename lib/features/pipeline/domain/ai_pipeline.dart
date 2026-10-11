@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 class TimedTextSegment {
   const TimedTextSegment({
     required this.start,
@@ -21,7 +23,7 @@ class PcmChunk {
   final Duration pts;
   final int sampleRate;
   final int channels;
-  final List<int> bytes;
+  final Uint8List bytes;
 }
 
 abstract interface class SpeechToTextEngine {
@@ -39,5 +41,5 @@ abstract interface class TranslationEngine {
 
 abstract interface class TextToSpeechEngine {
   bool get installed;
-  Future<List<int>> synthesize(String text, {required Duration targetDuration});
+  Future<Uint8List> synthesize(String text, {required Duration targetDuration});
 }

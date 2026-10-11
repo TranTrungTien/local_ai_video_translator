@@ -140,7 +140,13 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
     );
   }
 
-  Widget _buildActivePipelineView(dynamic activeSource, AiSchedulerState aiState) {
+  Widget _buildActivePipelineView(ResolvedSource activeSource, AiSchedulerState aiState) {
+    final subtitleProgress = aiState.subtitleReadyUntil.inMilliseconds /
+        (activeSource.capability.duration?.inMilliseconds ?? 1.0);
+    final dubProgress = aiState.dubReadyUntil.inMilliseconds /
+        (activeSource.capability.duration?.inMilliseconds ?? 1.0);
+    final overallProgress = (subtitleProgress + dubProgress) / 2.0;
+
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -168,7 +174,7 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      activeSource.input.isNotEmpty ? activeSource.input : widget.title,
+                      activeSource.input,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -206,9 +212,9 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
         // Circular Progress Gauge Center
         Center(
           child: ProgressGauge(
-            progress: _progress,
-            title: 'Đang dịch AI',
-            subtitle: 'Thời gian còn: 00:42',
+            progress: overallProgress,
+            title: 'Tiến độ Tổng thể',
+            subtitle: 'Phụ đề: ${(subtitleProgress * 100).toInt()}% | Lồng tiếng: ${(dubProgress * 100).toInt()}%',
             size: 200,
           ),
         ),

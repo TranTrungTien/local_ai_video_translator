@@ -47,7 +47,7 @@ class SimpleTokenizer {
       tokens.add(_specialTokens['<|notimestamps|>'] ?? 50362);
     }
 
-    // Normalizing space to the special meta-character ' '
+    // Normalizing space to the special meta-character ' ' (U+2581)
     final normalized = text.toLowerCase().replaceAll(' ', ' ');
     int start = 0;
     while (start < normalized.length) {

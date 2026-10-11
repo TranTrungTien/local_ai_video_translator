@@ -32,14 +32,14 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
     final tracks = <SubtitleTrack>[];
 
     if (source.kind == MediaKind.hls) {
-      final hlsTracks = await _extractHlsSubtitles(source.uri);
+      final hlsTracks = await _extractHlsSubtitles(source.uri, source.requestContext);
       tracks.addAll(hlsTracks);
     } else if (source.kind == MediaKind.dash) {
-      final dashTracks = await _extractDashSubtitles(source.uri);
+      final dashTracks = await _extractDashSubtitles(source.uri, source.requestContext);
       tracks.addAll(dashTracks);
     }
 
-    if (source.kind == MediaKind.localFile) {
+    if (source.kind == MediaKind.localFile || source.uri.isScheme('file')) {
       final sidecarTracks = await _checkLocalSidecarSubtitles(source.uri);
       tracks.addAll(sidecarTracks);
     }
@@ -47,18 +47,21 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
     return tracks;
   }
 
-  SubtitleSelectionResult evaluateSelectionPolicy(List<SubtitleTrack> tracks) {
-    return _selectionPolicy.evaluate(tracks);
-  }
-
-  Future<List<SubtitleTrack>> _extractHlsSubtitles(Uri playlistUri) async {
+  Future<List<SubtitleTrack>> _extractHlsSubtitles(
+    Uri playlistUri,
+    RequestContext context,
+  ) async {
     final tracks = <SubtitleTrack>[];
     try {
-      final response = await _dio.get<String>(playlistUri.toString());
+      final response = await _dio.get<String>(
+        playlistUri.toString(),
+        options: Options(headers: context.headers),
+      );
       final content = response.data ?? '';
 
+      // Improved regex for HLS subtitles to capture more attributes
       final subtitleRx = RegExp(
-        r'#EXT-X-MEDIA:TYPE=SUBTITLES.*?NAME="([^"]+)".*?LANGUAGE="([^"]+)".*?URI="([^"]+)"',
+        r'#EXT-X-MEDIA:TYPE=SUBTITLES.*?,NAME="([^"]+)"(?:.*?,LANGUAGE="([^"]+)")?.*?URI="([^"]+)"',
         caseSensitive: false,
       );
 
@@ -82,6 +85,7 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
               uri: absUri,
               format: SubtitleFormat.webvtt,
               isTargetLanguage: isVi,
+              requestContext: context,
             ),
           );
         }
@@ -92,25 +96,40 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
     return tracks;
   }
 
-  Future<List<SubtitleTrack>> _extractDashSubtitles(Uri mpdUri) async {
+  Future<List<SubtitleTrack>> _extractDashSubtitles(
+    Uri mpdUri,
+    RequestContext context,
+  ) async {
     final tracks = <SubtitleTrack>[];
     try {
-      final response = await _dio.get<String>(mpdUri.toString());
+      final response = await _dio.get<String>(
+        mpdUri.toString(),
+        options: Options(headers: context.headers),
+      );
       final content = response.data ?? '';
 
+      // DASH parsing for subtitles is complex, we look for AdaptationSets with mimeType="text/vtt" or similar
       final adaptSetRx = RegExp(
-        r'<AdaptationSet[^>]*mimeType="text/[^"]*"[^>]*>(.*?)</AdaptationSet>',
+        r'<AdaptationSet[^>]*?(?:contentType|mimeType)="text/(?:vtt|ttml|xml)"[^>]*?>(.*?)</AdaptationSet>',
         caseSensitive: false,
         dotAll: true,
       );
       final langRx = RegExp(r'lang="([^"]+)"', caseSensitive: false);
+      final baseUriRx = RegExp(r'<BaseURL>(.*?)</BaseURL>', caseSensitive: false);
 
       for (final match in adaptSetRx.allMatches(content)) {
+        final setContent = match.group(1)!;
         final langMatch = langRx.firstMatch(match.group(0)!);
         final rawLang = langMatch?.group(1) ?? 'en';
         final lang = _languageDetector.detectLanguage(
           declaredLanguage: rawLang,
         );
+
+        final baseUrlMatch = baseUriRx.firstMatch(setContent);
+        final subUri = baseUrlMatch != null
+            ? mpdUri.resolve(baseUrlMatch.group(1)!)
+            : mpdUri;
+
         final isVi = lang == AppConstants.targetLanguage;
 
         tracks.add(
@@ -118,9 +137,10 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
             id: 'dash_sub_${tracks.length}_$lang',
             language: lang,
             title: 'DASH Subtitle ($lang)',
-            uri: mpdUri,
-            format: SubtitleFormat.hlsSegment,
+            uri: subUri,
+            format: setContent.contains('vtt') ? SubtitleFormat.webvtt : SubtitleFormat.hlsSegment,
             isTargetLanguage: isVi,
+            requestContext: context,
           ),
         );
       }
@@ -132,7 +152,7 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
 
   Future<List<SubtitleTrack>> _checkLocalSidecarSubtitles(Uri fileUri) async {
     final tracks = <SubtitleTrack>[];
-    final path = fileUri.path;
+    final path = fileUri.toFilePath();
     final basePath = path.contains('.')
         ? path.substring(0, path.lastIndexOf('.'))
         : path;
@@ -146,40 +166,40 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
       '.srt',
       '.ttml',
     ]) {
-      final subUri = Uri.file('$basePath$ext');
+      final subFile = File('$basePath$ext');
       try {
-        final response = await _dio.get<String>(subUri.toString());
-        if (response.statusCode == 200 &&
-            (response.data?.isNotEmpty ?? false)) {
-          final isVi =
-              ext.contains('.vi.') ||
-              _languageDetector.detectLanguage(sampleText: response.data) ==
-                  'vi';
-          final lang = isVi
-              ? 'vi'
-              : _languageDetector.detectLanguage(
-                  declaredLanguage: ext.contains('.en.') ? 'en' : 'unknown',
-                );
+        if (await subFile.exists()) {
+          final content = await subFile.readAsString();
+          if (content.isNotEmpty) {
+            final isVi =
+                ext.contains('.vi.') ||
+                _languageDetector.detectLanguage(sampleText: content) == 'vi';
+            final lang = isVi
+                ? 'vi'
+                : _languageDetector.detectLanguage(
+                    declaredLanguage: ext.contains('.en.') ? 'en' : 'unknown',
+                  );
 
-          tracks.add(
-            SubtitleTrack(
-              id: 'local_sub_${tracks.length}',
-              language: lang,
-              title: isVi
-                  ? 'Vietnamese Sidecar Subtitle'
-                  : 'Local Sidecar Subtitle ($lang)',
-              uri: subUri,
-              format: ext.contains('vtt')
-                  ? SubtitleFormat.webvtt
-                  : (ext.contains('ttml')
-                        ? SubtitleFormat.hlsSegment
-                        : SubtitleFormat.srt),
-              isTargetLanguage: isVi,
-            ),
-          );
+            tracks.add(
+              SubtitleTrack(
+                id: 'local_sub_${tracks.length}',
+                language: lang,
+                title: isVi
+                    ? 'Vietnamese Sidecar Subtitle'
+                    : 'Local Sidecar Subtitle ($lang)',
+                uri: Uri.file(subFile.path),
+                format: ext.contains('vtt')
+                    ? SubtitleFormat.webvtt
+                    : (ext.contains('ttml')
+                          ? SubtitleFormat.hlsSegment
+                          : SubtitleFormat.srt),
+                isTargetLanguage: isVi,
+              ),
+            );
+          }
         }
       } catch (_) {
-        // Local subtitle file not found
+        // Local subtitle file error
       }
     }
     return tracks;

@@ -32,14 +32,14 @@ class CandidateVerifier {
 
   Future<VerifiedCandidateResult> verify(
     MediaCandidate candidate, {
-    RequestContext? context,
+    Map<String, String>? headers,
   }) async {
     // Try native Android verification first
     try {
       final res = await _nativeChannel
           .invokeMethod<Map<dynamic, dynamic>>('verifyCandidate', {
             'url': candidate.uri.toString(),
-            'headers': context?.headers ?? <String, String>{},
+            'headers': headers ?? <String, String>{},
           });
       if (res != null) {
         final isAccessible = res['isAccessible'] as bool? ?? false;
@@ -79,18 +79,18 @@ class CandidateVerifier {
       // Native channel fallback
     }
 
-    return _verifyWithDio(candidate, context: context);
+    return _verifyWithDio(candidate, headers: headers);
   }
 
   Future<VerifiedCandidateResult> _verifyWithDio(
     MediaCandidate candidate, {
-    RequestContext? context,
+    Map<String, String>? headers,
   }) async {
     try {
       final response = await _dio.head<void>(
         candidate.uri.toString(),
         options: Options(
-          headers: context?.headers,
+          headers: headers,
           validateStatus: (status) => status != null && status < 400,
         ),
       );

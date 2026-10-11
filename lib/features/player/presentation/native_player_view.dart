@@ -23,46 +23,36 @@ class NativePlayerView extends ConsumerStatefulWidget {
 }
 
 class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
-  late final Player _player;
   VideoController? _videoController;
-  StreamSubscription<Duration>? _positionSub;
+  bool _userPaused = false;
 
   @override
   void initState() {
     super.initState();
-    _player = Player();
 
-    VideoController.create(_player.handle).then((controller) {
-      if (mounted) {
-        setState(() {
-          _videoController = controller;
-        });
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final ctrl = ref.read(mediaSessionControllerProvider.notifier);
+      await ctrl.openSource(widget.source);
+
+      final session = ref.read(nativeMediaSessionProvider);
+      final p = session.player;
+
+      if (p != null && mounted) {
+        final controller = await VideoController.create(p.handle);
+        if (mounted) {
+          setState(() {
+            _videoController = controller;
+          });
+        }
       }
-    });
 
-    _player.open(
-      Media(widget.source.uri.toString(), httpHeaders: widget.source.headers),
-      play: true,
-    );
-
-    _positionSub = _player.stream.position.listen((pos) {
-      if (!mounted) return;
-      ref.read(aiSchedulerProvider.notifier).updatePlaybackPosition(pos);
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(aiSchedulerProvider.notifier).initializeForSource(widget.source);
-      ref
-          .read(mediaSessionControllerProvider.notifier)
-          .openSource(widget.source);
     });
   }
 
   @override
   void dispose() {
-    _positionSub?.cancel();
     _videoController?.dispose();
-    _player.dispose();
     super.dispose();
   }
 
@@ -79,13 +69,19 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
 
     final aiState = ref.watch(aiSchedulerProvider);
     final sessionSnapshot = ref.watch(mediaSessionControllerProvider);
+    final player = ref.read(nativeMediaSessionProvider).player;
 
     // Auto-pause when AI subtitle buffer is exhausted to prevent un-translated playback
     ref.listen<AiSchedulerState>(aiSchedulerProvider, (previous, next) {
-      if (next.isBufferingForAi && !(_player.state.playing == false)) {
-        _player.pause();
-      } else if (!next.isBufferingForAi && previous?.isBufferingForAi == true) {
-        _player.play();
+      if (player == null) return;
+
+      if (next.isBufferingForAi && player.state.playing) {
+        ref.read(mediaSessionControllerProvider.notifier).pause();
+      } else if (!next.isBufferingForAi &&
+                 previous?.isBufferingForAi == true &&
+                 !_userPaused) {
+        // Only resume if the user hadn't manually paused
+        ref.read(mediaSessionControllerProvider.notifier).play();
       }
     });
 

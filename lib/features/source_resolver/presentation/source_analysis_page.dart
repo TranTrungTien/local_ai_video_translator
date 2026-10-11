@@ -24,6 +24,7 @@ class SourceAnalysisPage extends ConsumerStatefulWidget {
 class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
   int _currentStep = 0;
   ResolvedSource? _resolvedSource;
+  bool _isFailed = false;
 
   @override
   void initState() {
@@ -32,36 +33,40 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
   }
 
   Future<void> _startAnalysis() async {
-    // Step 1: Validating URL
-    if (mounted) setState(() => _currentStep = 0);
-    await Future.delayed(const Duration(milliseconds: 600));
+    try {
+      // Step 1: Validating URL
+      if (mounted) setState(() => _currentStep = 0);
+      await Future.delayed(const Duration(milliseconds: 600));
 
-    // Step 2: Extracting Media
-    if (mounted) setState(() => _currentStep = 1);
-    await Future.delayed(const Duration(milliseconds: 800));
+      // Step 2: Extracting Media
+      if (mounted) setState(() => _currentStep = 1);
+      await Future.delayed(const Duration(milliseconds: 800));
 
-    // Step 3: Verifying HTTP Candidates
-    if (mounted) setState(() => _currentStep = 2);
+      // Step 3: Verifying HTTP Candidates
+      if (mounted) setState(() => _currentStep = 2);
 
-    final resolved = await ref
-        .read(sourceResolverControllerProvider.notifier)
-        .resolve(widget.inputUrl);
+      final resolved = await ref
+          .read(sourceResolverControllerProvider.notifier)
+          .resolve(widget.inputUrl);
 
-    if (mounted) {
-      final uri = Uri.tryParse(widget.inputUrl) ?? Uri.parse('https://example.com/video.m3u8');
-      setState(() {
-        _currentStep = 3;
-        _resolvedSource = resolved ??
-            ResolvedSource(
-              input: widget.inputUrl,
-              normalizedUri: uri,
-              finalUri: uri,
-              kind: MediaKind.hls,
-              playbackMode: PlaybackMode.native,
-              discoveryMethod: DiscoveryMethod.input,
-              capability: SourceCapability.full,
-            );
-      });
+      if (mounted) {
+        if (resolved == null || (resolved.failureReason != null && resolved.candidates.isEmpty)) {
+          setState(() {
+            _isFailed = true;
+            _resolvedSource = resolved;
+          });
+          return;
+        }
+
+        setState(() {
+          _currentStep = 3;
+          _resolvedSource = resolved;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isFailed = true);
+      }
     }
   }
 
@@ -152,23 +157,72 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
             ),
             const SizedBox(height: 24),
 
+            // Error Card
+            if (_isFailed) ...[
+              AppGlassCard(
+                padding: const EdgeInsets.all(24),
+                borderColor: AppColors.error.withValues(alpha: 0.5),
+                child: Column(
+                  children: [
+                    const Icon(Icons.error_outline_rounded,
+                        color: AppColors.error, size: 48),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Phân tích thất bại',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _resolvedSource?.failureReason ??
+                          'Không thể tìm thấy hoặc trích xuất luồng video hợp lệ từ địa chỉ này.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    GlowButton(
+                      label: 'Thử lại',
+                      icon: Icons.refresh_rounded,
+                      color: AppColors.error,
+                      onPressed: () {
+                        setState(() {
+                          _isFailed = false;
+                          _currentStep = 0;
+                          _resolvedSource = null;
+                        });
+                        _startAnalysis();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
+
             // Media Candidate Spec Card (Shown when Step 3 Complete)
-            if (_currentStep >= 3) ...[
+            if (_currentStep >= 3 && !_isFailed) ...[
               AppGlassCard(
                 padding: const EdgeInsets.all(20),
                 borderColor: AppColors.primaryLight.withValues(alpha: 0.5),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Row(
+                    Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Row(
+                        const Row(
                           children: [
-                            Icon(Icons.verified_rounded, color: AppColors.success, size: 20),
+                            Icon(Icons.verified_rounded,
+                                color: AppColors.success, size: 20),
                             SizedBox(width: 8),
                             Text(
-                              'Đã xác thực Luồng Stream Tốt nhất',
+                              'Đã xác thực Luồng Stream',
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.bold,
@@ -178,23 +232,39 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                           ],
                         ),
                         PillBadge(
-                          label: 'HLS 1080p',
-                          backgroundColor: Color(0x3310B981),
+                          label: _resolvedSource?.kind.name.toUpperCase() ?? 'VIDEO',
+                          backgroundColor: const Color(0x3310B981),
                           textColor: AppColors.success,
                         ),
                       ],
                     ),
                     const SizedBox(height: 16),
-                    _buildSpecRow('Tiêu đề:', _resolvedSource?.input ?? 'Direct Stream Video'),
-                    _buildSpecRow('Định dạng:', 'm3u8 (HLS Adaptive Stream)'),
+                    _buildSpecRow(
+                      'Định dạng:',
+                      _resolvedSource?.kind == MediaKind.hls
+                          ? 'm3u8 (HLS Adaptive Stream)'
+                          : _resolvedSource?.kind.name ?? 'Unknown',
+                    ),
                     if (_resolvedSource?.manualSubtitlePath != null)
                       _buildSpecRow(
                         'Phụ đề:',
                         'Tệp thủ công (${_resolvedSource!.manualSubtitlePath!.split(RegExp(r'[/\\]')).last})',
                       ),
-                    _buildSpecRow('Codec Video:', 'H.264 / AVC Main Profile'),
-                    _buildSpecRow('Âm thanh:', 'AAC 48kHz Stereo (16-bit)'),
-                    _buildSpecRow('CORS & Range:', 'Chấp nhận Byte Ranges (Support AI Buffer)'),
+                    _buildSpecRow(
+                      'Khả năng AI:',
+                      _resolvedSource?.supportsFullAi == true
+                          ? 'Hỗ trợ đầy đủ (Audio + Seek)'
+                          : 'Hạn chế (Chỉ phát lồng tiếng)',
+                    ),
+                    _buildSpecRow(
+                      'Phương thức:',
+                      _resolvedSource?.discoveryMethod.name ?? 'Auto',
+                    ),
+                    if (_resolvedSource?.requestContext.referer != null)
+                      _buildSpecRow(
+                        'Referer:',
+                        _resolvedSource!.requestContext.referer!,
+                      ),
                   ],
                 ),
               ),
@@ -218,6 +288,7 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
   }
 
   AppStepState _getStepState(int stepIndex) {
+    if (_isFailed && _currentStep == stepIndex) return AppStepState.failed;
     if (_currentStep > stepIndex) return AppStepState.completed;
     if (_currentStep == stepIndex) return AppStepState.active;
     return AppStepState.pending;

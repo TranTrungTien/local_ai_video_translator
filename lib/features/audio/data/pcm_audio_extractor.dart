@@ -17,7 +17,7 @@ class NativePcmAudioExtractor implements PcmAudioExtractor {
   NativePcmAudioExtractor();
 
   static const _methodChannel = MethodChannel('local_ai_video_translator/native_resolver');
-  static const _eventChannel = EventChannel('local_ai_video_translator/media_events');
+  static const _eventChannel = EventChannel('local_ai_video_translator/audio_pcm');
 
   @override
   bool get isAvailable => true;

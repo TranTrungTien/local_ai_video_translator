@@ -29,18 +29,29 @@ class SourceResolverController extends AsyncNotifier<ResolvedSource?> {
   @override
   Future<ResolvedSource?> build() async => null;
 
+  String? _manualSubtitlePath;
+
   Future<ResolvedSource?> resolve(String input) async {
     state = const AsyncLoading();
     final result = await AsyncValue.guard(
       () => ref.read(resolveSourceProvider)(input),
     );
-    state = result;
-    return result.value;
+
+    if (result.hasValue && result.value != null && _manualSubtitlePath != null) {
+      state = AsyncData(result.value!.copyWith(manualSubtitlePath: _manualSubtitlePath));
+    } else {
+      state = result;
+    }
+    return state.value;
   }
 
-  void reset() => state = const AsyncData(null);
+  void reset() {
+    _manualSubtitlePath = null;
+    state = const AsyncData(null);
+  }
 
   void setManualSubtitle(String path) {
+    _manualSubtitlePath = path;
     final current = state.value;
     if (current != null) {
       state = AsyncData(current.copyWith(manualSubtitlePath: path));

@@ -18,7 +18,7 @@ class DubSegment {
   final Duration endPts;
   final String sourceText;
   final String translatedText;
-  final List<int> generatedAudio;
+  final Uint8List generatedAudio;
   final Duration generatedDuration;
   final Duration targetDuration;
   final String voiceId;

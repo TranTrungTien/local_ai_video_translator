@@ -44,8 +44,8 @@ class LocalVadEngine implements VoiceActivityDetector {
   static const String modelId = 'vad_silero';
 
   OrtSession? _session;
-  final Float32List _h = Float32List(2 * 1 * 64);
-  final Float32List _c = Float32List(2 * 1 * 64);
+  // Silero VAD v5 uses a single state tensor [2, 1, 128] instead of separate h and c [2, 1, 64]
+  final Float32List _state = Float32List(2 * 1 * 128);
 
   @override
   bool get installed => true;
@@ -109,7 +109,7 @@ class LocalVadEngine implements VoiceActivityDetector {
           active ??= _RawSpeechRange(
             start: preRollBuffer.isNotEmpty ? preRollBuffer.first.pts : currentPts,
             end: currentPts + windowDuration,
-            chunks: [...preRollBuffer, currentChunk],
+            chunks: [...preRollBuffer], // preRollBuffer is already valid
           );
 
           if (pendingGap != null) {
@@ -164,8 +164,7 @@ class LocalVadEngine implements VoiceActivityDetector {
   }
 
   void _resetState() {
-    _h.fillRange(0, _h.length, 0.0);
-    _c.fillRange(0, _c.length, 0.0);
+    _state.fillRange(0, _state.length, 0.0);
   }
 
   Future<bool> _isSpeechData(Uint8List bytes, int sampleRate) async {
@@ -176,36 +175,28 @@ class LocalVadEngine implements VoiceActivityDetector {
       final float32Audio = _pcm16ToFloat32(bytes);
       final inputOrt = await OrtValue.fromList(float32Audio, [1, float32Audio.length]);
       final srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), [1]);
-      final hOrt = await OrtValue.fromList(_h, [2, 1, 64]);
-      final cOrt = await OrtValue.fromList(_c, [2, 1, 64]);
+      final stateOrt = await OrtValue.fromList(_state, [2, 1, 128]);
 
       final inputs = {
         'input': inputOrt,
         'sr': srOrt,
-        'h': hOrt,
-        'c': cOrt,
+        'state': stateOrt,
       };
 
       final outputs = await session.run(inputs);
 
       final outputVal = await outputs['output']?.asList();
-      final hVal = await outputs['h']?.asList();
-      final cVal = await outputs['c']?.asList();
+      final stateVal = await outputs['state']?.asList();
 
-      if (outputVal != null && hVal != null && cVal != null) {
+      if (outputVal != null && stateVal != null) {
         final probability = outputVal[0][0] as double;
-        _updateState(_h, hVal as List<List<List<double>>>);
-        _updateState(_c, cVal as List<List<List<double>>>);
+        _updateState(_state, stateVal as List<List<List<double>>>);
 
         await inputOrt.dispose();
         await srOrt.dispose();
-        await hOrt.dispose();
-        await cOrt.dispose();
-
-        // Also dispose output tensors
+        await stateOrt.dispose();
         await outputs['output']?.dispose();
-        await outputs['h']?.dispose();
-        await outputs['c']?.dispose();
+        await outputs['state']?.dispose();
 
         return probability >= threshold;
       }

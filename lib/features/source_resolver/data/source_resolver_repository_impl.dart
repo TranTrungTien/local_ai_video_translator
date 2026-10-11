@@ -39,6 +39,16 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     final rejectionReasons = <String, String>{};
     final cancelToken = CancelToken();
 
+    // Initialize RequestContext with Referer and User-Agent based on the input URL
+    final requestContext = RequestContext(
+      userAgent: AppConstants.defaultUserAgent,
+      referer: normalized.scheme.startsWith('http') ? normalized.toString() : null,
+      headers: {
+        'User-Agent': AppConstants.defaultUserAgent,
+        if (normalized.scheme.startsWith('http')) 'Referer': normalized.toString(),
+      },
+    );
+
     try {
       final result = await _resolveInternal(
         normalized,
@@ -51,6 +61,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
         rejectionReasons: rejectionReasons,
         stopwatch: stopwatch,
         cancelToken: cancelToken,
+        requestContext: requestContext,
       );
 
       stopwatch.stop();
@@ -85,6 +96,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     required Map<String, String> rejectionReasons,
     required Stopwatch stopwatch,
     required CancelToken cancelToken,
+    required RequestContext requestContext,
   }) async {
     if (depth > AppConstants.maxIframeDepth) {
       throw const ResolutionException('Maximum iframe depth reached.');
@@ -102,6 +114,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
         capability: SourceCapability.full,
         resolutionDuration: stopwatch.elapsed,
         diagnostics: diagnostics,
+        requestContext: requestContext,
       );
     }
 
@@ -114,7 +127,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
         method: DiscoveryMethod.input,
         score: 100,
       );
-      final verified = await _verifier.verify(directCandidate);
+      final verified = await _verifier.verify(directCandidate, headers: requestContext.headers);
       if (verified.isAccessible) {
         diagnostics.add(
           'Direct media URL verified accessible (status=${verified.statusCode}, type=${verified.contentType}).',
@@ -133,6 +146,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
           selectedCandidate: verified.candidate,
           resolutionDuration: stopwatch.elapsed,
           diagnostics: diagnostics,
+          requestContext: requestContext,
         );
       } else {
         rejectionReasons[currentUri.toString()] =
@@ -148,7 +162,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     }
 
     try {
-      final probeResult = await _probe(currentUri, cancelToken);
+      final probeResult = await _probe(currentUri, cancelToken, requestContext);
       final finalUri = probeResult.finalUri;
       if (finalUri != currentUri && !redirectChain.contains(finalUri)) {
         redirectChain.add(finalUri);
@@ -184,6 +198,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
           selectedCandidate: candidate,
           resolutionDuration: stopwatch.elapsed,
           diagnostics: diagnostics,
+          requestContext: requestContext,
         );
       }
 
@@ -199,7 +214,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
         final sorted = [...parsed.candidates]
           ..sort((a, b) => b.score.compareTo(a.score));
         for (final candidate in sorted) {
-          final verification = await _verifier.verify(candidate);
+          final verification = await _verifier.verify(candidate, headers: requestContext.headers);
           verifiedCandidates.add(verification.candidate);
           if (verification.isAccessible) {
             diagnostics.add(
@@ -219,6 +234,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
               selectedCandidate: verification.candidate,
               resolutionDuration: stopwatch.elapsed,
               diagnostics: diagnostics,
+              requestContext: requestContext,
             );
           } else {
             rejectionReasons[candidate.uri.toString()] =
@@ -241,6 +257,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
             rejectionReasons: rejectionReasons,
             stopwatch: stopwatch,
             cancelToken: cancelToken,
+            requestContext: requestContext,
           );
         } on ResolutionException {
           // Continue to next iframe
@@ -277,6 +294,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
         resolutionDuration: stopwatch.elapsed,
         rejectionReasons: rejectionReasons,
         diagnostics: diagnostics,
+        requestContext: requestContext,
       );
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
@@ -287,10 +305,14 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
   Future<({Uri finalUri, String contentType, String body})> _probe(
     Uri uri,
     CancelToken cancelToken,
+    RequestContext requestContext,
   ) async {
     final response = await _dio.get<ResponseBody>(
       uri.toString(),
-      options: Options(responseType: ResponseType.stream),
+      options: Options(
+        responseType: ResponseType.stream,
+        headers: requestContext.headers,
+      ),
       cancelToken: cancelToken,
     );
 

@@ -22,6 +22,8 @@ class NativeMediaSession implements MediaSession {
 
   final List<StreamSubscription<dynamic>> _subscriptions = [];
 
+  mk.Player? get player => _player;
+
   @override
   MediaSessionSnapshot get currentSnapshot => _snapshot;
 

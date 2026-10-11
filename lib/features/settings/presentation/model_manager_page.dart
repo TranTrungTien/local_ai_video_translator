@@ -13,16 +13,24 @@ class ModelManagerPage extends ConsumerStatefulWidget {
 
 class _ModelManagerPageState extends ConsumerState<ModelManagerPage> {
   final Map<String, ModelDownloadProgress> _progressMap = {};
+  StreamSubscription<ModelDownloadProgress>? _progressSub;
 
   @override
   void initState() {
     super.initState();
-    ref.read(modelManagerRepositoryProvider).progressStream.listen((progress) {
+    _progressSub =
+        ref.read(modelManagerRepositoryProvider).progressStream.listen((progress) {
       if (!mounted) return;
       setState(() {
         _progressMap[progress.modelId] = progress;
       });
     });
+  }
+
+  @override
+  void dispose() {
+    _progressSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -95,33 +103,10 @@ class _ModelCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                FutureBuilder<bool>(
-                  future: repo.isModelDownloaded(manifest.id),
-                  builder: (context, snapshot) {
-                    final isDownloaded = snapshot.data ?? false;
-                    if (isDownloading) {
-                      return const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      );
-                    }
-                    if (isDownloaded) {
-                      return IconButton(
-                        icon: const Icon(
-                          Icons.delete_outline,
-                          color: Colors.redAccent,
-                        ),
-                        onPressed: () => repo.deleteModel(manifest.id),
-                        tooltip: 'Delete downloaded model',
-                      );
-                    }
-                    return FilledButton.icon(
-                      onPressed: () => repo.downloadModel(manifest),
-                      icon: const Icon(Icons.download, size: 16),
-                      label: const Text('Download'),
-                    );
-                  },
+                _ModelDownloadButton(
+                  manifest: manifest,
+                  isDownloading: isDownloading,
+                  repo: repo,
                 ),
               ],
             ),
@@ -153,4 +138,81 @@ class _ModelCard extends StatelessWidget {
     AiModelType.tts => Icons.record_voice_over,
     AiModelType.vad => Icons.graphic_eq,
   };
+}
+
+class _ModelDownloadButton extends StatefulWidget {
+  const _ModelDownloadButton({
+    required this.manifest,
+    required this.isDownloading,
+    required this.repo,
+  });
+
+  final AiModelManifest manifest;
+  final bool isDownloading;
+  final ModelManagerRepository repo;
+
+  @override
+  State<_ModelDownloadButton> createState() => _ModelDownloadButtonState();
+}
+
+class _ModelDownloadButtonState extends State<_ModelDownloadButton> {
+  late Future<bool> _isDownloadedFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _isDownloadedFuture = widget.repo.isModelDownloaded(widget.manifest.id);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ModelDownloadButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.manifest.id != widget.manifest.id) {
+      _isDownloadedFuture = widget.repo.isModelDownloaded(widget.manifest.id);
+    }
+  }
+
+  void _refresh() {
+    setState(() {
+      _isDownloadedFuture = widget.repo.isModelDownloaded(widget.manifest.id);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _isDownloadedFuture,
+      builder: (context, snapshot) {
+        final isDownloaded = snapshot.data ?? false;
+        if (widget.isDownloading) {
+          return const SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          );
+        }
+        if (isDownloaded) {
+          return IconButton(
+            icon: const Icon(
+              Icons.delete_outline,
+              color: Colors.redAccent,
+            ),
+            onPressed: () async {
+              await widget.repo.deleteModel(widget.manifest.id);
+              _refresh();
+            },
+            tooltip: 'Delete downloaded model',
+          );
+        }
+        return FilledButton.icon(
+          onPressed: () async {
+            await widget.repo.downloadModel(widget.manifest);
+            _refresh();
+          },
+          icon: const Icon(Icons.download, size: 16),
+          label: const Text('Download'),
+        );
+      },
+    );
+  }
 }

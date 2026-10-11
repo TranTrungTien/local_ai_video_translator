@@ -14,19 +14,24 @@ class HtmlMediaParser {
     final candidates = <MediaCandidate>[];
     final iframes = <Uri>[];
 
+    // Refined regex for iframes to handle - and _ in attributes
     final iframeRx = RegExp(
-      r'''<iframe[^>]+src=["']([^"']+)["']''',
+      r'''<iframe[^>]+?src=["']([^"']+)["']''',
       caseSensitive: false,
     );
     for (final match in iframeRx.allMatches(html)) {
-      final uri = _absolute(baseUri, match.group(1));
-      if (uri != null) {
-        iframes.add(uri);
+      final uriStr = match.group(1);
+      if (uriStr != null) {
+        final uri = _absolute(baseUri, uriStr);
+        if (uri != null) {
+          iframes.add(uri);
+        }
       }
     }
 
+    // Refined regex for common JS-embedded media sources
     final urlRx = RegExp(
-      r'''(?:src|file|url)\s*[:=]\s*["']([^"']+)["']''',
+      r'''(?:src|file|url|source|data-src)\s*[:=]\s*["']([^"']+\.(?:m3u8|mpd|mp4|webm|mkv)(?:\?[^"']*)?)["']''',
       caseSensitive: false,
     );
     for (final match in urlRx.allMatches(html)) {
@@ -46,8 +51,9 @@ class HtmlMediaParser {
       }
     }
 
+    // Direct URL discovery with support for escaped slashes and common video extensions
     final rawMediaRx = RegExp(
-      r'''https?:\\?/\\?/[^-\u0020"'<>]+?(?:\.m3u8|\.mpd|\.mp4|\.webm)(?:\?[^-\u0020"'<>]*)?''',
+      r'''https?[:\\]+[^"'\s<>]+?\.(?:m3u8|mpd|mp4|webm|mkv)(?:\?[^"'\s<>]*)?''',
       caseSensitive: false,
     );
     for (final match in rawMediaRx.allMatches(html)) {

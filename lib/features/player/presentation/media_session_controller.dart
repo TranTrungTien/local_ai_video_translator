@@ -38,20 +38,17 @@ final dubbingPlayerServiceProvider = Provider<DubbingPlayerService>((ref) {
 });
 
 final mediaSessionControllerProvider =
-    StateNotifierProvider<MediaSessionController, MediaSessionSnapshot>((ref) {
-      final session = ref.watch(nativeMediaSessionProvider);
-      final migration = ref.watch(migrationControllerProvider);
-      final dubbingPlayer = ref.watch(dubbingPlayerServiceProvider);
+    NotifierProvider<MediaSessionController, MediaSessionSnapshot>(
+      MediaSessionController.new,
+    );
 
-      return MediaSessionController(session, migration, dubbingPlayer);
-    });
+class MediaSessionController extends Notifier<MediaSessionSnapshot> {
+  @override
+  MediaSessionSnapshot build() {
+    _session = ref.watch(nativeMediaSessionProvider);
+    _migrationController = ref.watch(migrationControllerProvider);
+    _dubbingPlayer = ref.watch(dubbingPlayerServiceProvider);
 
-class MediaSessionController extends StateNotifier<MediaSessionSnapshot> {
-  MediaSessionController(
-    this._session,
-    this._migrationController,
-    this._dubbingPlayer,
-  ) : super(MediaSessionSnapshot.idle) {
     _subscription = _session.snapshotStream.listen((snapshot) {
       state = snapshot;
 
@@ -66,11 +63,19 @@ class MediaSessionController extends StateNotifier<MediaSessionSnapshot> {
     _duckingSubscription = _dubbingPlayer.duckingStream.listen((shouldDuck) {
       _fadeVolume(shouldDuck ? 20.0 : 100.0);
     });
+
+    ref.onDispose(() {
+      _subscription?.cancel();
+      _duckingSubscription?.cancel();
+      _fadeTimer?.cancel();
+    });
+
+    return MediaSessionSnapshot.idle;
   }
 
-  final NativeMediaSession _session;
-  final NativeMigrationController _migrationController;
-  final DubbingPlayerService _dubbingPlayer;
+  late final NativeMediaSession _session;
+  late final NativeMigrationController _migrationController;
+  late final DubbingPlayerService _dubbingPlayer;
   StreamSubscription<MediaSessionSnapshot>? _subscription;
   StreamSubscription<bool>? _duckingSubscription;
   Timer? _fadeTimer;

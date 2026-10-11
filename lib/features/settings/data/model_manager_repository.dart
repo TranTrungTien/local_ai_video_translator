@@ -30,6 +30,19 @@ class ModelDownloadProgress {
       totalBytes > 0 ? (downloadedBytes / totalBytes).clamp(0.0, 1.0) : 0.0;
 }
 
+class ModelDownloadException implements Exception {
+  ModelDownloadException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+class ModelIntegrityException implements Exception {
+  const ModelIntegrityException();
+  @override
+  String toString() => 'Model integrity check failed';
+}
+
 class ModelManagerRepository {
   ModelManagerRepository(this._dio);
 
@@ -109,80 +122,128 @@ class ModelManagerRepository {
     return true;
   }
 
-  /// Downloads model with resumable support and strict SHA-256 checksum verification before activation.
+  /// Downloads model with resumable support, retries, and strict SHA-256 checksum verification.
   Future<void> downloadModel(AiModelManifest manifest) async {
     final targetFile = await getModelFile(manifest.id);
     final tmpFile = File('${targetFile.path}.tmp');
 
-    int existingBytes = 0;
-    if (await tmpFile.exists()) {
-      existingBytes = await tmpFile.length();
-    }
-
-    _progressController.add(
-      ModelDownloadProgress(
-        modelId: manifest.id,
-        state: ModelDownloadState.downloading,
-        downloadedBytes: existingBytes,
-        totalBytes: manifest.bytes,
-      ),
-    );
-
     try {
-      final options = Options(
-        headers: existingBytes > 0 ? {'Range': 'bytes=$existingBytes-'} : null,
-      );
+      const maxAttempts = 6;
+      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+        var existing = await tmpFile.exists() ? await tmpFile.length() : 0;
 
-      await _dio.download(
-        manifest.downloadUri.toString(),
-        tmpFile.path,
-        options: options,
-        onReceiveProgress: (received, total) {
-          final actualReceived = existingBytes + received;
+        // If tmp file is somehow larger than expected, start over
+        if (existing > manifest.bytes) {
+          await tmpFile.delete();
+          existing = 0;
+        }
+
+        try {
+          if (existing < manifest.bytes) {
+            await _dio.download(
+              manifest.downloadUri.toString(),
+              tmpFile.path,
+              options: Options(
+                headers: existing > 0 ? {'Range': 'bytes=$existing-'} : null,
+                receiveTimeout: const Duration(minutes: 2),
+              ),
+              fileAccessMode:
+                  existing > 0 ? FileAccessMode.append : FileAccessMode.write,
+              deleteOnError: false,
+              onReceiveProgress: (received, total) {
+                _progressController.add(
+                  ModelDownloadProgress(
+                    modelId: manifest.id,
+                    state: ModelDownloadState.downloading,
+                    downloadedBytes: existing + received,
+                    totalBytes: manifest.bytes,
+                  ),
+                );
+              },
+            );
+          }
+
+          // Verify integrity
+          final computedHash = await Sha256Util.computeFileHash(tmpFile);
+          if (manifest.sha256.isNotEmpty && computedHash != manifest.sha256) {
+            throw const ModelIntegrityException();
+          }
+
+          // Success: move to target
+          if (await targetFile.exists()) await targetFile.delete();
+          await tmpFile.rename(targetFile.path);
+
           _progressController.add(
             ModelDownloadProgress(
               modelId: manifest.id,
-              state: ModelDownloadState.downloading,
-              downloadedBytes: actualReceived,
-              totalBytes: total > 0 ? (existingBytes + total) : manifest.bytes,
+              state: ModelDownloadState.ready,
+              downloadedBytes: manifest.bytes,
+              totalBytes: manifest.bytes,
             ),
           );
-        },
-      );
-
-      // Verify SHA-256 checksum before activating downloaded model
-      final computedHash = await Sha256Util.computeFileHash(tmpFile);
-      if (computedHash.isNotEmpty && manifest.sha256.isNotEmpty) {
-        // Enforce checksum match if provided in manifest
-        // (In test or sandbox environments where mock URIs return HTML/placeholders, we verify computation succeeded)
-      }
-
-      if (await tmpFile.exists()) {
-        if (await targetFile.exists()) {
-          await targetFile.delete();
+          return;
+        } on ModelIntegrityException {
+          if (await tmpFile.exists()) await tmpFile.delete();
+          if (attempt == maxAttempts) {
+            throw ModelDownloadException('File tải về bị hỏng, hãy thử lại sau.');
+          }
+          // Retry immediately for integrity failure
+        } on DioException catch (e) {
+          if (e.response?.statusCode == 416) {
+            // Range not satisfiable usually means file is already complete or server changed
+            if (await tmpFile.exists()) await tmpFile.delete();
+            continue;
+          }
+          if (!_isRetryable(e) || attempt == maxAttempts) {
+            throw ModelDownloadException(_friendly(e));
+          }
+          // Backoff
+          await Future<void>.delayed(
+              Duration(seconds: (1 << attempt).clamp(2, 30)));
         }
-        await tmpFile.rename(targetFile.path);
       }
-
-      _progressController.add(
-        ModelDownloadProgress(
-          modelId: manifest.id,
-          state: ModelDownloadState.ready,
-          downloadedBytes: manifest.bytes,
-          totalBytes: manifest.bytes,
-        ),
-      );
     } catch (e) {
+      final currentExisting = await tmpFile.exists() ? await tmpFile.length() : 0;
       _progressController.add(
         ModelDownloadProgress(
           modelId: manifest.id,
           state: ModelDownloadState.failed,
-          downloadedBytes: existingBytes,
+          downloadedBytes: currentExisting,
           totalBytes: manifest.bytes,
-          errorMessage: e.toString(),
+          errorMessage: e is ModelDownloadException ? e.message : 'Tải thất bại.',
         ),
       );
     }
+  }
+
+  bool _isRetryable(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.unknown:
+        // "Connection closed while receiving data" usually falls here
+        return e.error is SocketException || e.error is HttpException || e.message?.contains('Connection closed') == true;
+      case DioExceptionType.badResponse:
+        final c = e.response?.statusCode ?? 0;
+        return c == 429 || c >= 500;
+      default:
+        return false;
+    }
+  }
+
+  String _friendly(DioException e) {
+    final err = e.error;
+    if (err is SocketException) {
+      return 'Không kết nối được máy chủ model. Kiểm tra Wi‑Fi, DNS hoặc VPN.';
+    }
+    if (e.type == DioExceptionType.unknown && (err is HttpException || e.message?.contains('Connection closed') == true)) {
+      return 'Kết nối bị ngắt giữa chừng. Bấm "Thử lại" để tải tiếp.';
+    }
+    final code = e.response?.statusCode;
+    return code != null ? 'Máy chủ trả lỗi HTTP $code.' : 'Tải thất bại.';
   }
 
   Future<void> deleteModel(String modelId) async {

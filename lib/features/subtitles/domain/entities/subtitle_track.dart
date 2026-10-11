@@ -1,3 +1,5 @@
+import '../../source_resolver/domain/entities/resolved_source.dart';
+
 enum SubtitleFormat { webvtt, srt, hlsSegment }
 
 class SubtitleTrack {
@@ -9,6 +11,7 @@ class SubtitleTrack {
     required this.format,
     this.isTargetLanguage = false,
     this.isOriginal = false,
+    this.requestContext,
   });
 
   final String id;
@@ -18,4 +21,5 @@ class SubtitleTrack {
   final SubtitleFormat format;
   final bool isTargetLanguage;
   final bool isOriginal;
+  final RequestContext? requestContext;
 }
