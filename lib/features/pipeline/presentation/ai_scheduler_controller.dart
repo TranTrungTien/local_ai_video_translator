@@ -123,6 +123,35 @@ class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
       activeSourceStrategy: 'Initializing...',
     );
   }
+class AiSchedulerController extends StateNotifier<AiSchedulerState> {
+  AiSchedulerController({
+    required SubtitleRepository subtitleRepository,
+    required SpeechToTextEngine sttEngine,
+    required TranslationEngine translationEngine,
+    required TextToSpeechEngine ttsEngine,
+    required PcmAudioExtractor audioExtractor,
+    required VoiceActivityDetector vadEngine,
+    required DubbingRepository dubbingRepository,
+    required DiagnosticsService diagnostics,
+    DeviceCapabilityProfile? deviceProfile,
+  }) : _subtitleRepository = subtitleRepository,
+       _sttEngine = sttEngine,
+       _translationEngine = translationEngine,
+       _ttsEngine = ttsEngine,
+       _audioExtractor = audioExtractor,
+       _vadEngine = vadEngine,
+       _dubbingRepository = dubbingRepository,
+       _diagnostics = diagnostics,
+       _deviceProfile = deviceProfile ?? DeviceCapabilityProfile.defaultProfile,
+       super(
+         const AiSchedulerState(
+           playbackPosition: Duration.zero,
+           subtitleReadyUntil: Duration.zero,
+           dubReadyUntil: Duration.zero,
+           workMode: AiWorkMode.starting,
+           activeSourceStrategy: 'Initializing...',
+         ),
+       );
 
   late final SubtitleRepository _subtitleRepository;
   late final SpeechToTextEngine _sttEngine;
@@ -156,6 +185,7 @@ class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
 
     try {
       if (source.manualSubtitlePath != null) {
+        _diagnostics.log('AIScheduler', 'Loading manual subtitle: ${source.manualSubtitlePath}');
         state = state.copyWith(activeSourceStrategy: 'Using Manual Subtitle File');
         final manualTrack = SubtitleTrack(
           id: 'manual_sub',
@@ -198,14 +228,19 @@ class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
       state = state.copyWith(
         activeSourceStrategy: 'AI Pipeline (VAD -> STT -> Translation)',
       );
+      _diagnostics.log('AIScheduler', 'Starting AI Pipeline for source: ${source.uri}');
       await _runAudioSttPipeline(source, gen, startAt: state.playbackPosition);
     } on OperationCancelledException {
       _diagnostics.log('AIScheduler', 'Pipeline cancelled for gen $gen');
     } catch (e, st) {
       if (_isStale(gen)) return;
+      final msg = e.toString().contains('model not found')
+        ? 'Lỗi: Thiếu model AI. Vui lòng tải xuống trong Cài đặt.'
+        : 'Không thể khởi tạo phụ đề tự động: $e';
+
       _diagnostics.log('AIScheduler', 'Init failed: $e\n$st', level: LogLevel.error);
       state = state.copyWith(
-        errorMessage: 'Không thể khởi tạo phụ đề tự động.',
+        errorMessage: msg,
         workMode: AiWorkMode.blocked,
       );
     }
@@ -289,7 +324,14 @@ class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
     final token = _activeToken!;
     final audioStream = _audioExtractor.extractPcmStream(source, startPosition: startAt);
 
-    await for (final speech in _vadEngine.detectSpeech(audioStream)) {
+    await for (final speech in _vadEngine.detectSpeech(
+      audioStream,
+      onProgress: (pts) {
+        if (_isStale(gen)) return;
+        _timelineBuffer.reportProgress(pts);
+        _updateBufferState();
+      },
+    )) {
       token.throwIfCancelled();
       if (_isStale(gen)) return;
 
@@ -332,6 +374,14 @@ class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
 
   void updatePlaybackPosition(Duration pts) {
     final activeSeg = _timelineBuffer.segmentAt(pts);
+
+    // Xử lý Dubbing (Lồng tiếng): Tìm đoạn audio tương ứng và thông báo cho Repository
+    // markAsActive(null) is now handled inside getSegmentAt for cleanup
+    final dubSeg = _dubbingRepository.getSegmentAt(pts);
+    if (dubSeg != null) {
+      _dubbingRepository.markAsActive(dubSeg.id);
+    }
+
     final snapshot = AiBufferSnapshot(
       playbackPosition: pts,
       subtitleReadyUntil: _timelineBuffer.subtitleReadyUntil,
@@ -396,13 +446,15 @@ class AiSchedulerController extends AutoDisposeNotifier<AiSchedulerState> {
       playbackRate: state.playbackRate,
     );
 
-    final mode = _policy.modeFor(snapshot, playbackRate: state.playbackRate);
+    final mode = state.errorMessage != null
+        ? AiWorkMode.blocked
+        : _policy.modeFor(snapshot, playbackRate: state.playbackRate);
 
     state = state.copyWith(
       subtitleReadyUntil: readyUntil,
       dubReadyUntil: dubReadyUntil,
       workMode: mode,
-      isBufferingForAi: !canStart && state.playbackPosition == Duration.zero,
+      isBufferingForAi: !canStart && (state.playbackPosition == Duration.zero || state.isBufferingForAi),
     );
   }
 
@@ -420,30 +472,59 @@ final subtitleRepositoryProvider = Provider<SubtitleRepository>((ref) {
 });
 
 final sttEngineProvider = Provider<SpeechToTextEngine>((ref) {
-  return LocalSpeechToTextEngine(ref.watch(modelManagerRepositoryProvider));
+  return LocalSpeechToTextEngine(
+    ref.watch(modelManagerRepositoryProvider),
+    ref.watch(diagnosticsServiceProvider),
+  );
 });
 
 final translationEngineProvider = Provider<TranslationEngine>((ref) {
-  return LocalTranslationEngine(ref.watch(modelManagerRepositoryProvider));
+  return LocalTranslationEngine(
+    ref.watch(modelManagerRepositoryProvider),
+    ref.watch(diagnosticsServiceProvider),
+  );
 });
 
 final ttsEngineProvider = Provider<TextToSpeechEngine>((ref) {
-  return LocalTextToSpeechEngine(ref.watch(modelManagerRepositoryProvider));
+  return LocalTextToSpeechEngine(
+    ref.watch(modelManagerRepositoryProvider),
+    ref.watch(diagnosticsServiceProvider),
+  );
 });
 
 final pcmAudioExtractorProvider = Provider<PcmAudioExtractor>((ref) {
   if (Platform.isAndroid) {
-    return NativePcmAudioExtractor();
+    return NativePcmAudioExtractor(ref.watch(diagnosticsServiceProvider));
   }
   return const DefaultPcmAudioExtractor();
 });
 
 final vadEngineProvider = Provider<VoiceActivityDetector>((ref) {
-  return LocalVadEngine(ref.watch(modelManagerRepositoryProvider));
+  return LocalVadEngine(
+    ref.watch(modelManagerRepositoryProvider),
+    ref.watch(diagnosticsServiceProvider),
+  );
 });
 
 final dubbingRepositoryProvider = Provider<DubbingRepository>((ref) {
   return DubbingRepository();
 });
 
+final activeDubIdProvider = StreamProvider.autoDispose<String?>((ref) {
+  return ref.watch(dubbingRepositoryProvider).activeIdStream;
+});
+
+final aiSchedulerProvider =
+    StateNotifierProvider.autoDispose<AiSchedulerController, AiSchedulerState>((ref) {
+      return AiSchedulerController(
+        subtitleRepository: ref.watch(subtitleRepositoryProvider),
+        sttEngine: ref.watch(sttEngineProvider),
+        translationEngine: ref.watch(translationEngineProvider),
+        ttsEngine: ref.watch(ttsEngineProvider),
+        audioExtractor: ref.watch(pcmAudioExtractorProvider),
+        vadEngine: ref.watch(vadEngineProvider),
+        dubbingRepository: ref.watch(dubbingRepositoryProvider),
+        diagnostics: ref.watch(diagnosticsServiceProvider),
+      );
+    });
 

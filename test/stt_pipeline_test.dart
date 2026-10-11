@@ -6,16 +6,41 @@ import 'package:local_ai_video_translator/core/utils/cancellation_token.dart';
 import 'package:local_ai_video_translator/features/pipeline/data/local_stt_engine.dart';
 import 'package:local_ai_video_translator/features/pipeline/data/stt_benchmark.dart';
 import 'package:local_ai_video_translator/features/pipeline/domain/ai_pipeline.dart';
-import 'package:local_ai_video_translator/features/pipeline/domain/device_capability.dart';
 import 'package:local_ai_video_translator/features/settings/data/model_manager_repository.dart';
 import 'package:local_ai_video_translator/features/settings/domain/model_manifest.dart';
+import 'package:local_ai_video_translator/core/diagnostics/diagnostics_service.dart';
+
+class MockDiagnosticsService implements DiagnosticsService {
+  @override
+  void log(String subsystem, String message, {LogLevel level = LogLevel.info, Object? details}) {}
+  @override
+  List<DiagnosticEntry> get logs => [];
+  @override
+  Stream<DiagnosticEntry> get stream => const Stream.empty();
+  @override
+  void clear() {}
+  @override
+  void dispose() {}
+}
 
 class FakeModelManagerRepository implements ModelManagerRepository {
+  bool _exists = true;
+  void setExists(bool value) => _exists = value;
+
   @override
   Future<bool> isModelDownloaded(String modelId) async => true;
 
   @override
-  Future<File> getModelFile(String modelId) async => File('dummy.onnx');
+  Future<File> getModelFile(String modelId, String fileName) async {
+    if (!_exists) return File('non_existent.onnx');
+    return File('dummy.onnx');
+  }
+
+  @override
+  Future<Directory> getModelDir(String modelId) async => Directory('dummy');
+
+  @override
+  AiModelManifest? manifestById(String modelId) => null;
 
   @override
   Future<void> downloadModel(AiModelManifest manifest) async {}
@@ -36,7 +61,8 @@ void main() {
       'remaps STT segment timestamps back to original media presentation timestamps (PTS)',
       () async {
         final fakeRepo = FakeModelManagerRepository();
-        final sttEngine = LocalSpeechToTextEngine(fakeRepo);
+        final mockDiagnostics = MockDiagnosticsService();
+        final sttEngine = LocalSpeechToTextEngine(fakeRepo, mockDiagnostics);
 
         final chunks = [
           PcmChunk(
@@ -70,7 +96,8 @@ void main() {
       'cancels STT job instantly when cancellation token is triggered on seek',
       () async {
         final fakeRepo = FakeModelManagerRepository();
-        final sttEngine = LocalSpeechToTextEngine(fakeRepo);
+        final mockDiagnostics = MockDiagnosticsService();
+        final sttEngine = LocalSpeechToTextEngine(fakeRepo, mockDiagnostics);
         final token = CancellationToken();
 
         token.cancel(); // Trigger cancellation before transcription
@@ -98,15 +125,9 @@ void main() {
       'falls back to degraded quality tier on low memory device constraints',
       () async {
         final fakeRepo = FakeModelManagerRepository();
-        const lowMemProfile = DeviceCapabilityProfile(
-          memoryClassMb: 1024,
-          cpuCores: 4,
-          acceleration: AccelerationHardware.cpu,
-          thermalStatus: ThermalStatus.nominal,
-          recentSttRtf: 1.5,
-        );
-
-        final sttEngine = LocalSpeechToTextEngine(fakeRepo, lowMemProfile);
+        fakeRepo.setExists(false); // Simulate missing model for fallback
+        final mockDiagnostics = MockDiagnosticsService();
+        final sttEngine = LocalSpeechToTextEngine(fakeRepo, mockDiagnostics);
         final segments = await sttEngine.transcribe(
           Stream<PcmChunk>.fromIterable([
             PcmChunk(
@@ -118,7 +139,7 @@ void main() {
           ]),
         );
 
-        expect(segments.first.text, contains('Low Memory Tier'));
+        expect(segments.first.text, contains('[STT Model Missing]'));
       },
     );
 

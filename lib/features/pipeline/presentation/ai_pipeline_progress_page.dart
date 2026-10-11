@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
+import '../data/performance_monitor.dart';
 import 'ai_scheduler_controller.dart';
 
 class AiPipelineProgressPage extends ConsumerStatefulWidget {
@@ -208,7 +209,84 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
           ),
         ),
         const SizedBox(height: 28),
+  Widget _buildActivePipelineView(dynamic activeSource, AiSchedulerState aiState) {
+    return StreamBuilder<PerformanceMetrics>(
+      stream: PerformanceMonitor.instance.metricsStream,
+      builder: (context, perfSnapshot) {
+        final metrics = perfSnapshot.data ?? PerformanceMonitor.instance.current;
 
+        return ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            // Video Title & Subtitle Badge
+            AppGlassCard(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: const BoxDecoration(
+                      color: AppColors.primaryGlow,
+                      borderRadius: BorderRadius.all(Radius.circular(12)),
+                    ),
+                    child: const Icon(
+                      Icons.movie_filter_rounded,
+                      color: AppColors.primaryLight,
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          activeSource.input.isNotEmpty ? activeSource.input : widget.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Row(
+                          children: [
+                            const Text(
+                              'Tiếng Anh -> Tiếng Việt',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: AppColors.textMuted,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            PillBadge(
+                              label: aiState.activeSourceStrategy,
+                              backgroundColor: AppColors.surface,
+                              textColor: AppColors.primaryLight,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 28),
+
+            // Circular Progress Gauge Center
+            Center(
+              child: ProgressGauge(
+                progress: _progress,
+                title: 'Đang dịch AI',
+                subtitle: 'Thực tế: ${metrics.sttRtf.toStringAsFixed(2)}x RTF',
+                size: 200,
+              ),
+            ),
+            const SizedBox(height: 28),
         // Circular Progress Gauge Center
         Center(
           child: ProgressGauge(
@@ -220,119 +298,121 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
         ),
         const SizedBox(height: 28),
 
-        // Metrics Row
-        Row(
-          children: [
-            Expanded(
-              child: _buildMetricTile(
-                icon: Icons.speed_rounded,
-                label: 'Tốc độ Dịch',
-                value: '1.8x Realtime',
-                color: AppColors.cyanAccent,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _buildMetricTile(
-                icon: Icons.memory_rounded,
-                label: 'Thiết bị NPU',
-                value: 'High Tier (GPU)',
-                color: AppColors.primaryLight,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _buildMetricTile(
-                icon: Icons.subtitles_rounded,
-                label: 'Đã tạo',
-                value: '142 Phụ đề',
-                color: AppColors.success,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 24),
-
-        // Checklist Pipeline Steps Header
-        const Text(
-          'Danh sách Nhiệm vụ AI Pipeline',
-          style: TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.bold,
-            color: AppColors.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // Steps Checklist Card
-        AppGlassCard(
-          padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-          child: const Column(
-            children: [
-              StepTimelineTile(
-                title: 'Tách Âm thanh 16kHz PCM Mono',
-                subtitle: 'Đã hoàn thành bóc tách luồng âm thanh gốc',
-                stepState: AppStepState.completed,
-              ),
-              StepTimelineTile(
-                title: 'Speech-to-Text (Whisper AI Engine)',
-                subtitle: 'Đang nhận dạng giọng nói & tạo mốc thời gian (PTS)',
-                stepState: AppStepState.active,
-              ),
-              StepTimelineTile(
-                title: 'Dịch thuật Neural Sang Tiếng Việt',
-                subtitle: 'Tối ưu ngữ cảnh & ghép nối phụ đề',
-                stepState: AppStepState.pending,
-              ),
-              StepTimelineTile(
-                title: 'Tổng hợp Giọng nói Lồng tiếng (TTS)',
-                subtitle: 'Tạo luồng âm thanh song song cho Player',
-                stepState: AppStepState.pending,
-                isLast: true,
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 24),
-
-        // Action Buttons
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.textPrimary,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
+            // Metrics Row
+            Row(
+              children: [
+                Expanded(
+                  child: _buildMetricTile(
+                    icon: Icons.speed_rounded,
+                    label: 'STT Speed',
+                    value: '${metrics.sttRtf.toStringAsFixed(2)}x RTF',
+                    color: AppColors.cyanAccent,
                   ),
-                  side: const BorderSide(color: AppColors.surfaceCardBorder),
                 ),
-                icon: const Icon(Icons.pause_circle_outline_rounded, size: 20),
-                label: const Text('Tạm dừng'),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Đã tạm dừng tiến trình AI')),
-                  );
-                },
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildMetricTile(
+                    icon: Icons.translate_rounded,
+                    label: 'Translate',
+                    value: '${metrics.translationThroughputCharsPerSec.toInt()} ch/s',
+                    color: AppColors.primaryLight,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildMetricTile(
+                    icon: Icons.record_voice_over_rounded,
+                    label: 'TTS Speed',
+                    value: '${metrics.ttsRtf.toStringAsFixed(2)}x RTF',
+                    color: AppColors.success,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // Checklist Pipeline Steps Header
+            const Text(
+              'Danh sách Nhiệm vụ AI Pipeline',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary,
               ),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: GlowButton(
-                label: 'Mở Trình phát',
-                icon: Icons.play_arrow_rounded,
-                onPressed: () {
-                  if (activeSource != null) {
-                    context.push('/player', extra: activeSource);
-                  }
-                },
+            const SizedBox(height: 12),
+
+            // Steps Checklist Card
+            AppGlassCard(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+              child: const Column(
+                children: [
+                  StepTimelineTile(
+                    title: 'Tách Âm thanh 16kHz PCM Mono',
+                    subtitle: 'Đã hoàn thành bóc tách luồng âm thanh gốc',
+                    stepState: AppStepState.completed,
+                  ),
+                  StepTimelineTile(
+                    title: 'Speech-to-Text (Whisper AI Engine)',
+                    subtitle: 'Đang nhận dạng giọng nói & tạo mốc thời gian (PTS)',
+                    stepState: AppStepState.active,
+                  ),
+                  StepTimelineTile(
+                    title: 'Dịch thuật Neural Sang Tiếng Việt',
+                    subtitle: 'Tối ưu ngữ cảnh & ghép nối phụ đề',
+                    stepState: AppStepState.pending,
+                  ),
+                  StepTimelineTile(
+                    title: 'Tổng hợp Giọng nói Lồng tiếng (TTS)',
+                    subtitle: 'Tạo luồng âm thanh song song cho Player',
+                    stepState: AppStepState.pending,
+                    isLast: true,
+                  ),
+                ],
               ),
             ),
+            const SizedBox(height: 24),
+
+            // Action Buttons
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.textPrimary,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      side: const BorderSide(color: AppColors.surfaceCardBorder),
+                    ),
+                    icon: const Icon(Icons.pause_circle_outline_rounded, size: 20),
+                    label: const Text('Tạm dừng'),
+                    onPressed: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Đã tạm dừng tiến trình AI')),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GlowButton(
+                    label: 'Mở Trình phát',
+                    icon: Icons.play_arrow_rounded,
+                    onPressed: () {
+                      if (activeSource != null) {
+                        context.push('/player', extra: activeSource);
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
           ],
-        ),
-        const SizedBox(height: 20),
-      ],
+        );
+      }
     );
   }
 

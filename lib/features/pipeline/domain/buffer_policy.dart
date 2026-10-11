@@ -1,7 +1,7 @@
 import '../../../core/constants/app_constants.dart';
 import 'device_capability.dart';
 
-enum AiWorkMode { blocked, turbo, normal, eco, paused }
+enum AiWorkMode { starting, blocked, turbo, normal, eco, paused }
 
 class NetworkPlaybackBuffer {
   const NetworkPlaybackBuffer({required this.bufferedPosition});
@@ -88,7 +88,12 @@ class AiBufferPolicy {
 
   AiWorkMode modeFor(AiBufferSnapshot snapshot, {double playbackRate = 1.0}) {
     final ahead = snapshot.subtitleAhead;
-    if (ahead <= Duration.zero) return AiWorkMode.blocked;
+    if (ahead <= Duration.zero) {
+      if (snapshot.playbackPosition == Duration.zero) {
+        return AiWorkMode.starting;
+      }
+      return AiWorkMode.blocked;
+    }
     if (ahead <= AppConstants.dangerBuffer * 6 * playbackRate) {
       return AiWorkMode.turbo;
     }

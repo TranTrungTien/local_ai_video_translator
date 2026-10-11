@@ -2,12 +2,20 @@ import 'ai_pipeline.dart';
 
 class TimelineSubtitleBuffer {
   final List<TimedTextSegment> _segments = [];
+  Duration _processedUntil = Duration.zero;
 
   List<TimedTextSegment> get segments => List.unmodifiable(_segments);
 
   Duration get subtitleReadyUntil {
-    if (_segments.isEmpty) return Duration.zero;
-    return _segments.last.end;
+    final lastSegmentEnd =
+        _segments.isEmpty ? Duration.zero : _segments.last.end;
+    return lastSegmentEnd > _processedUntil ? lastSegmentEnd : _processedUntil;
+  }
+
+  void reportProgress(Duration pts) {
+    if (pts > _processedUntil) {
+      _processedUntil = pts;
+    }
   }
 
   void addSegments(List<TimedTextSegment> newSegments) {
@@ -26,9 +34,13 @@ class TimelineSubtitleBuffer {
 
   void flushObsolete(Duration beforePts) {
     _segments.removeWhere((seg) => seg.end < beforePts);
+    if (beforePts > _processedUntil) {
+      _processedUntil = beforePts;
+    }
   }
 
   void clear() {
     _segments.clear();
+    _processedUntil = Duration.zero;
   }
 }

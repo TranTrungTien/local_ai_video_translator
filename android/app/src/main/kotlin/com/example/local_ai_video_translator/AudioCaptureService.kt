@@ -9,23 +9,23 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import java.nio.ByteBuffer
+import kotlin.concurrent.thread
 
 class AudioCaptureService : Service() {
-
-    private var mediaProjection: MediaProjection? = null
-    private var audioRecord: AudioRecord? = null
-    private var captureThread: Thread? = null
-    private var isCapturing = false
-
     companion object {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_DATA = "EXTRA_DATA"
-        const val NOTIFICATION_ID = 101
-        const val CHANNEL_ID = "audio_capture_channel"
+        private const val NOTIFICATION_ID = 101
+        private const val CHANNEL_ID = "audio_capture_channel"
     }
+
+    private var mediaProjection: MediaProjection? = null
+    private var audioRecord: AudioRecord? = null
+    private var isCapturing = false
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -37,29 +37,22 @@ class AudioCaptureService : Service() {
                     startCapture(resultCode, data)
                 }
             }
-            ACTION_STOP -> {
-                stopCapture()
-                stopSelf()
-            }
+            ACTION_STOP -> stopCapture()
         }
         return START_NOT_STICKY
     }
 
     private fun startForegroundService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Audio Capture Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
+            val channel = NotificationChannel(CHANNEL_ID, "Audio Capture", NotificationManager.IMPORTANCE_LOW)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Capturing System Audio")
-            .setContentText("Local AI Video Translator is capturing audio for translation.")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("AI Translator is Listening")
+            .setContentText("Translating audio from current video...")
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .build()
 
         startForeground(NOTIFICATION_ID, notification)
@@ -69,48 +62,45 @@ class AudioCaptureService : Service() {
         val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpManager.getMediaProjection(resultCode, data)
 
-        val sampleRate = 16000
-        val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
                 .build()
+
+            val sampleRate = 16000
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+            val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat) * 2
 
             audioRecord = AudioRecord.Builder()
+                .setAudioFormat(AudioFormat.Builder()
+                    .setEncoding(audioFormat)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelConfig)
+                    .build())
                 .setAudioPlaybackCaptureConfig(config)
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(audioFormat)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(channelConfig)
-                        .build()
-                )
                 .setBufferSizeInBytes(bufferSize)
                 .build()
-        }
 
-        audioRecord?.startRecording()
-        isCapturing = true
+            audioRecord?.startRecording()
+            isCapturing = true
 
-        captureThread = thread(start = true) {
-            val buffer = ShortArray(bufferSize / 2)
-            while (isCapturing) {
-                val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                if (read > 0) {
-                    val byteBuffer = ByteBuffer.allocate(read * 2)
-                    byteBuffer.asShortBuffer().put(buffer, 0, read)
-                    val bytes = byteBuffer.array()
-                    
-                    MainActivity.emitMediaEvent(mapOf(
-                        "type" to "audio_chunk",
-                        "data" to bytes,
-                        "sampleRate" to sampleRate,
-                        "channels" to 1,
-                        "timestamp" to System.currentTimeMillis()
-                    ))
+            thread {
+                val buffer = ByteArray(bufferSize)
+                while (isCapturing) {
+                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    if (read > 0) {
+                        val audioData = buffer.copyOf(read)
+                        MainActivity.emitMediaEvent(mapOf(
+                            "type" to "audio_chunk",
+                            "data" to audioData,
+                            "sampleRate" to sampleRate,
+                            "channels" to 1,
+                            "timestamp" to System.currentTimeMillis()
+                        ))
+                    }
                 }
             }
         }
@@ -118,19 +108,17 @@ class AudioCaptureService : Service() {
 
     private fun stopCapture() {
         isCapturing = false
-        captureThread?.join()
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
         mediaProjection?.stop()
         mediaProjection = null
+        stopForeground(true)
+        stopSelf()
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun thread(start: Boolean = true, block: () -> Unit): Thread {
-        val t = Thread(block)
-        if (start) t.start()
-        return t
+    override fun onDestroy() {
+        stopCapture()
+        super.onDestroy()
     }
 }

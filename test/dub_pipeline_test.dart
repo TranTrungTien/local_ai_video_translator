@@ -6,13 +6,33 @@ import 'package:local_ai_video_translator/features/pipeline/domain/dub_segment.d
 import 'package:local_ai_video_translator/features/pipeline/domain/feature_entitlement.dart';
 import 'package:local_ai_video_translator/features/settings/data/model_manager_repository.dart';
 import 'package:local_ai_video_translator/features/settings/domain/model_manifest.dart';
+import 'package:local_ai_video_translator/core/diagnostics/diagnostics_service.dart';
+
+class MockDiagnosticsService implements DiagnosticsService {
+  @override
+  void log(String subsystem, String message, {LogLevel level = LogLevel.info, Object? details}) {}
+  @override
+  List<DiagnosticEntry> get logs => [];
+  @override
+  Stream<DiagnosticEntry> get stream => const Stream.empty();
+  @override
+  void clear() {}
+  @override
+  void dispose() {}
+}
 
 class FakeModelManagerRepository implements ModelManagerRepository {
   @override
   Future<bool> isModelDownloaded(String modelId) async => true;
 
   @override
-  Future<File> getModelFile(String modelId) async => File('dummy.onnx');
+  Future<File> getModelFile(String modelId, String fileName) async => File('dummy.onnx');
+
+  @override
+  Future<Directory> getModelDir(String modelId) async => Directory('dummy');
+
+  @override
+  AiModelManifest? manifestById(String modelId) => null;
 
   @override
   Future<void> downloadModel(AiModelManifest manifest) async {}
@@ -31,7 +51,7 @@ void main() {
   group('Phase 10: Premium Local Vietnamese Voice-over Tests', () {
     test('synthesizes TTS audio and respects duration fitting', () async {
       final fakeRepo = FakeModelManagerRepository();
-      final engine = LocalTextToSpeechEngine(fakeRepo);
+      final engine = LocalTextToSpeechEngine(fakeRepo, MockDiagnosticsService());
 
       const target = Duration(seconds: 3);
       final audio = await engine.synthesize(
@@ -59,7 +79,7 @@ void main() {
 
     test('TTS cache reuses generated audio on backward seek', () async {
       final fakeRepo = FakeModelManagerRepository();
-      final engine = LocalTextToSpeechEngine(fakeRepo);
+      final engine = LocalTextToSpeechEngine(fakeRepo, MockDiagnosticsService());
 
       const target = Duration(seconds: 2);
       final audio1 = await engine.synthesize(
