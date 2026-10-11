@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 
+import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../settings/data/model_manager_repository.dart';
 
@@ -23,12 +24,16 @@ class SpeechSegment {
 
 abstract interface class VoiceActivityDetector {
   bool get installed;
-  Stream<SpeechSegment> detectSpeech(Stream<PcmChunk> audioStream);
+  Stream<SpeechSegment> detectSpeech(
+    Stream<PcmChunk> audioStream, {
+    void Function(Duration pts)? onProgress,
+  });
 }
 
 class LocalVadEngine implements VoiceActivityDetector {
   LocalVadEngine(
-    this._modelRepository, {
+    this._modelRepository,
+    this._diagnostics, {
     this.threshold = 0.5,
     this.minSpeechDuration = const Duration(milliseconds: 250),
     this.maxMergeGap = const Duration(milliseconds: 300),
@@ -36,6 +41,7 @@ class LocalVadEngine implements VoiceActivityDetector {
   });
 
   final ModelManagerRepository _modelRepository;
+  final DiagnosticsService _diagnostics;
   final double threshold;
   final Duration minSpeechDuration;
   final Duration maxMergeGap;
@@ -53,7 +59,7 @@ class LocalVadEngine implements VoiceActivityDetector {
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
 
-    final modelFile = await _modelRepository.getModelFile(modelId);
+    final modelFile = await _modelRepository.getModelFile(modelId, 'silero_vad.onnx');
     if (!await modelFile.exists()) {
       return;
     }
@@ -63,7 +69,10 @@ class LocalVadEngine implements VoiceActivityDetector {
   }
 
   @override
-  Stream<SpeechSegment> detectSpeech(Stream<PcmChunk> audioStream) async* {
+  Stream<SpeechSegment> detectSpeech(
+    Stream<PcmChunk> audioStream, {
+    void Function(Duration pts)? onProgress,
+  }) async* {
     await _ensureInitialized();
     _resetState();
 
@@ -101,6 +110,10 @@ class LocalVadEngine implements VoiceActivityDetector {
           channels: 1,
           bytes: currentWindowBytes,
         );
+
+        if (onProgress != null) {
+          onProgress(currentPts + windowDuration);
+        }
 
         final isSpeech = await _isSpeechData(currentWindowBytes, chunk.sampleRate);
         windowOffset += windowDuration;
@@ -209,7 +222,9 @@ class LocalVadEngine implements VoiceActivityDetector {
 
         return probability >= threshold;
       }
-    } catch (e) { /* ignore */ }
+    } catch (e, st) {
+      _diagnostics.log('VAD_ENGINE', 'Inference error: $e', level: LogLevel.error, details: st);
+    }
     return _isSpeechEnergy(bytes);
   }
 

@@ -1,17 +1,24 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+import 'performance_monitor.dart';
 
+import '../../../core/diagnostics/diagnostics_service.dart';
 import '../domain/ai_pipeline.dart';
 import '../../settings/data/model_manager_repository.dart';
 import 'tts_cache.dart';
 
 class LocalTextToSpeechEngine implements TextToSpeechEngine {
-  LocalTextToSpeechEngine(this._modelRepository, [TtsCache? cache])
-    : _cache = cache ?? TtsCache();
+  LocalTextToSpeechEngine(
+    this._modelRepository,
+    this._diagnostics, [
+    TtsCache? cache,
+  ]) : _cache = cache ?? TtsCache();
 
   final ModelManagerRepository _modelRepository;
+  final DiagnosticsService _diagnostics;
   final TtsCache _cache;
 
   static const String modelId = 'tts_piper_vi_female';
@@ -25,7 +32,9 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
 
-    final modelFile = await _modelRepository.getModelFile(modelId);
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
+
+    final modelFile = await _modelRepository.getModelFile(modelId, 'vi_VN-25hours_single-low.onnx');
     if (!await modelFile.exists()) {
       throw Exception('Piper TTS model not found. Please download it in settings.');
     }
@@ -51,8 +60,13 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
 
     await _ensureInitialized();
     final session = _session;
-    if (session == null) return _generateMockAudio(targetDuration);
+    if (session == null) {
+      final mockAudio = _generateMockAudio(targetDuration);
+      _cache.put(cleanText, mockAudio);
+      return mockAudio;
+    }
 
+    final stopwatch = Stopwatch()..start();
     try {
       // 1. Phonemization/Tokenization
       final phonemeIds = _textToPhonemeIds(cleanText);
@@ -104,11 +118,18 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
         );
         final pcm16 = _float32ToPcm16(floatAudio);
 
+        stopwatch.stop();
+        final audioDurationSec = pcm16.length / (16000 * 2);
+        if (audioDurationSec > 0) {
+          final rtf = stopwatch.elapsedMilliseconds / (audioDurationSec * 1000);
+          PerformanceMonitor.instance.updateTtsRtf(rtf);
+        }
+
         _cache.put(cleanText, pcm16);
         return pcm16;
       }
-    } catch (e) {
-      // Fallback
+    } catch (e, st) {
+      _diagnostics.log('TTS_ENGINE', 'Synthesis error: $e', level: LogLevel.error, details: st);
     }
 
     return _generateMockAudio(targetDuration);

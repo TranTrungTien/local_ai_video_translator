@@ -5,11 +5,36 @@ import 'dart:io';
 import 'package:local_ai_video_translator/features/audio/data/vad_engine.dart';
 import 'package:local_ai_video_translator/features/pipeline/domain/ai_pipeline.dart';
 import 'package:local_ai_video_translator/features/settings/data/model_manager_repository.dart';
+import 'package:local_ai_video_translator/features/settings/domain/model_manifest.dart';
+import 'package:local_ai_video_translator/core/diagnostics/diagnostics_service.dart';
+
+class MockDiagnosticsService implements DiagnosticsService {
+  @override
+  void log(String subsystem, String message, {LogLevel level = LogLevel.info, Object? details}) {}
+  @override
+  List<DiagnosticEntry> get logs => [];
+  @override
+  Stream<DiagnosticEntry> get stream => const Stream.empty();
+  @override
+  void clear() {}
+  @override
+  void dispose() {}
+}
 
 class MockModelManagerRepository implements ModelManagerRepository {
   @override
-  Future<File> getModelFile(String modelId) async {
+  Future<File> getModelFile(String modelId, String fileName) async {
     return File('non_existent_path');
+  }
+
+  @override
+  Future<Directory> getModelDir(String modelId) async {
+    return Directory('non_existent_path');
+  }
+
+  @override
+  AiModelManifest? manifestById(String modelId) {
+    return null;
   }
 
   @override
@@ -89,6 +114,7 @@ void main() {
         // but required for constructor
         final vad = LocalVadEngine(
           MockModelManagerRepository(),
+          MockDiagnosticsService(),
           minSpeechDuration: const Duration(milliseconds: 400),
           maxMergeGap: const Duration(milliseconds: 300),
         );

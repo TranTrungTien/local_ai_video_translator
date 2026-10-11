@@ -1,12 +1,15 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart' hide AudioTrack;
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/diagnostics/presentation/diagnostic_log_overlay.dart';
 import '../../pipeline/presentation/ai_scheduler_controller.dart';
+import '../../pipeline/presentation/dubbing_controller.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import '../domain/entities/media_session_snapshot.dart';
 import '../domain/entities/media_track.dart';
@@ -31,14 +34,7 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
   void initState() {
     super.initState();
     _player = Player();
-
-    VideoController.create(_player.handle).then((controller) {
-      if (mounted) {
-        setState(() {
-          _videoController = controller;
-        });
-      }
-    });
+    _videoController = VideoController(_player);
 
     _player.open(
       Media(widget.source.uri.toString(), httpHeaders: widget.source.headers),
@@ -61,7 +57,6 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
   @override
   void dispose() {
     _positionSub?.cancel();
-    _videoController?.dispose();
     _player.dispose();
     super.dispose();
   }
@@ -80,7 +75,7 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
     final aiState = ref.watch(aiSchedulerProvider);
     final sessionSnapshot = ref.watch(mediaSessionControllerProvider);
 
-    // Auto-pause when AI subtitle buffer is exhausted to prevent un-translated playback
+    // Auto-pause when AI subtitle buffer is exhausted
     ref.listen<AiSchedulerState>(aiSchedulerProvider, (previous, next) {
       if (next.isBufferingForAi && !(_player.state.playing == false)) {
         _player.pause();
@@ -88,6 +83,21 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
         _player.play();
       }
     });
+
+    // Audio Ducking: Giảm âm lượng video khi có lồng tiếng AI phát
+    ref.listen<AsyncValue<String?>>(
+      activeDubIdProvider,
+      (previous, next) {
+        if (ref.read(dubbingControllerProvider)) {
+          final activeId = next.value;
+          if (activeId != null) {
+            _player.setVolume(25.0); // Set to 25% for ducking
+          } else {
+            _player.setVolume(100.0);
+          }
+        }
+      },
+    );
 
     if (sessionSnapshot.status == PlayerStatus.error) {
       return ColoredBox(
@@ -141,6 +151,23 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
           Center(child: Video(controller: _videoController!)),
           SubtitleOverlay(segment: aiState.activeSegment),
           _TrackSelectorOverlay(sessionSnapshot: sessionSnapshot),
+          if (kDebugMode)
+            Positioned(
+              bottom: 80,
+              right: 16,
+              child: FloatingActionButton.small(
+                backgroundColor: Colors.black54,
+                child: const Icon(Icons.bug_report, color: Colors.redAccent),
+                onPressed: () {
+                  showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    backgroundColor: Colors.transparent,
+                    builder: (context) => const DiagnosticLogOverlay(),
+                  );
+                },
+              ),
+            ),
           if (aiState.isBufferingForAi)
             Container(
               color: Colors.black54,
@@ -219,6 +246,21 @@ class _TrackSelectorOverlay extends ConsumerWidget {
                   },
                 ),
               ],
+              // Nút Bật/Tắt Lồng tiếng (AI Dubbing)
+              IconButton(
+                icon: Icon(
+                  ref.watch(dubbingControllerProvider)
+                      ? Icons.record_voice_over
+                      : Icons.voice_over_off,
+                  size: 18,
+                  color: ref.watch(dubbingControllerProvider)
+                      ? const Color(0xFF7C5CFC)
+                      : Colors.white,
+                ),
+                tooltip: 'AI Vietnamese Dubbing',
+                onPressed: () =>
+                    ref.read(dubbingControllerProvider.notifier).toggleDubbing(),
+              ),
               if (subtitleTracks.isNotEmpty) ...[
                 PopupMenuButton<PlayerSubtitleTrack?>(
                   icon: const Icon(

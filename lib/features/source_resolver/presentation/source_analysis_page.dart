@@ -56,17 +56,34 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
               input: widget.inputUrl,
               normalizedUri: uri,
               finalUri: uri,
-              kind: MediaKind.hls,
+              kind: widget.inputUrl.contains('file_picker') ? MediaKind.localFile : MediaKind.hls,
               playbackMode: PlaybackMode.native,
               discoveryMethod: DiscoveryMethod.input,
               capability: SourceCapability.full,
             );
       });
+
+      // Thêm độ trễ nhỏ để hoàn tất bước cuối (chuyển từ xoay sang tích xanh)
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted) {
+        setState(() => _currentStep = 4);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Xác định định dạng hiển thị dựa trên loại nguồn
+    String formatText = 'HLS Adaptive Stream';
+    String formatLabel = 'm3u8';
+    String badgeLabel = 'HLS 1080p';
+
+    if (_resolvedSource?.kind == MediaKind.localFile) {
+      formatText = 'Local MP4/MKV Container';
+      formatLabel = 'FILE';
+      badgeLabel = 'LOCAL';
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Phân tích Nguồn Video'),
@@ -160,10 +177,10 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Row(
+                    Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Row(
+                        const Row(
                           children: [
                             Icon(Icons.verified_rounded, color: AppColors.success, size: 20),
                             SizedBox(width: 8),
@@ -178,15 +195,15 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                           ],
                         ),
                         PillBadge(
-                          label: 'HLS 1080p',
-                          backgroundColor: Color(0x3310B981),
+                          label: badgeLabel,
+                          backgroundColor: const Color(0x3310B981),
                           textColor: AppColors.success,
                         ),
                       ],
                     ),
                     const SizedBox(height: 16),
-                    _buildSpecRow('Tiêu đề:', _resolvedSource?.input ?? 'Direct Stream Video'),
-                    _buildSpecRow('Định dạng:', 'm3u8 (HLS Adaptive Stream)'),
+                    _buildSpecRow('Tiêu đề:', _resolvedSource?.input.split(RegExp(r'[/\\]')).last ?? 'Direct Stream Video'),
+                    _buildSpecRow('Định dạng:', '$formatLabel ($formatText)'),
                     if (_resolvedSource?.manualSubtitlePath != null)
                       _buildSpecRow(
                         'Phụ đề:',

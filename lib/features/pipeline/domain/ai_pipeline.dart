@@ -1,3 +1,5 @@
+import '../../../core/utils/cancellation_token.dart';
+
 class TimedTextSegment {
   const TimedTextSegment({
     required this.start,
@@ -27,6 +29,10 @@ class PcmChunk {
 abstract interface class SpeechToTextEngine {
   bool get installed;
   Future<List<TimedTextSegment>> transcribe(Stream<PcmChunk> audio);
+  Future<List<TimedTextSegment>> transcribeWithCancellation(
+    Stream<PcmChunk> audio, {
+    required CancellationToken cancellationToken,
+  });
 }
 
 abstract interface class TranslationEngine {

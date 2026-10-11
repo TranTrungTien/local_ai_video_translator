@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
+import 'ffmpeg_audio_extractor.dart';
 
 abstract interface class PcmAudioExtractor {
   bool get isAvailable;
@@ -14,8 +16,9 @@ abstract interface class PcmAudioExtractor {
 }
 
 class NativePcmAudioExtractor implements PcmAudioExtractor {
-  NativePcmAudioExtractor();
+  NativePcmAudioExtractor(this._diagnostics);
 
+  final DiagnosticsService _diagnostics;
   static const _methodChannel = MethodChannel('local_ai_video_translator/native_resolver');
   static const _eventChannel = EventChannel('local_ai_video_translator/media_events');
 
@@ -27,15 +30,33 @@ class NativePcmAudioExtractor implements PcmAudioExtractor {
     ResolvedSource source, {
     Duration? startPosition,
   }) async* {
-    // 1. Request MediaProjection and start native service
-    final started = await _methodChannel.invokeMethod<bool>('startAudioCapture');
-    if (started != true) {
-      throw Exception('Could not start native audio capture');
+    // Chỉ yêu cầu MediaProjection (Share Screen) nếu là nguồn nhúng (Webview)
+    // Nguồn local hoặc direct stream thì không cần.
+    final needsMediaProjection = source.kind == MediaKind.embedded ||
+                                source.playbackMode == PlaybackMode.embedded;
+
+    if (needsMediaProjection) {
+      _diagnostics.log('NativeAudio', 'Requesting MediaProjection for embedded source');
+      final started = await _methodChannel.invokeMethod<bool>('startAudioCapture');
+      if (started != true) {
+        _diagnostics.log('NativeAudio', 'MediaProjection denied or failed', level: LogLevel.error);
+        throw Exception('Could not start native audio capture for web source');
+      }
     }
 
     final controller = StreamController<PcmChunk>();
 
-    // 2. Listen to audio chunks from EventChannel
+    if (!needsMediaProjection) {
+      _diagnostics.log('NativeAudio', 'Local/Direct source detected. Using FFmpeg for extraction.');
+      // Use FFmpeg for local files or direct streams
+      yield* FfmpegPcmAudioExtractor(_diagnostics).extractPcmStream(
+        source,
+        startPosition: startPosition,
+      );
+      return;
+    }
+
+    // 2. Listen to audio chunks from EventChannel (dành cho MediaProjection)
     int? firstTimestamp;
 
     final subscription = _eventChannel.receiveBroadcastStream().listen((event) {

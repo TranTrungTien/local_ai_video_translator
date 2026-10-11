@@ -23,6 +23,8 @@ class _HomePageState extends ConsumerState<HomePage> {
   final _controller = TextEditingController();
   StreamSubscription<List<SharedMediaFile>>? _shareSubscription;
 
+  bool _isPickingFile = false;
+
   @override
   void initState() {
     super.initState();
@@ -74,24 +76,46 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Future<void> _openFile() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.video);
-    final path = result?.files.firstOrNull?.path;
-    if (path != null) await _resolve(path);
+    if (_isPickingFile) return;
+    setState(() => _isPickingFile = true);
+
+    try {
+      final result = await FilePicker.platform.pickFiles(type: FileType.video);
+      final path = result?.files.firstOrNull?.path;
+      if (path != null) await _resolve(path);
+    } catch (e) {
+      debugPrint('Error picking file: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isPickingFile = false);
+      }
+    }
   }
 
   Future<void> _pickSubtitle() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['srt', 'vtt', 'ass'],
-    );
-    final path = result?.files.firstOrNull?.path;
-    if (path != null && mounted) {
-      ref.read(sourceResolverControllerProvider.notifier).setManualSubtitle(path);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Đã chọn phụ đề: ${result?.files.first.name}'),
-        ),
+    if (_isPickingFile) return;
+    setState(() => _isPickingFile = true);
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['srt', 'vtt', 'ass'],
       );
+      final path = result?.files.firstOrNull?.path;
+      if (path != null && mounted) {
+        ref.read(sourceResolverControllerProvider.notifier).setManualSubtitle(path);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Đã chọn phụ đề: ${result?.files.first.name}'),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error picking subtitle: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isPickingFile = false);
+      }
     }
   }
 

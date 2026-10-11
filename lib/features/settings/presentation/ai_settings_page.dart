@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
+import 'model_manager_page.dart';
 
 class AiSettingsPage extends StatefulWidget {
   const AiSettingsPage({super.key});
@@ -232,7 +233,14 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
                         ],
                       ),
                       TextButton(
-                        onPressed: () {},
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const ModelManagerPage(),
+                            ),
+                          );
+                        },
                         child: const Text('Quản lý Models'),
                       ),
                     ],

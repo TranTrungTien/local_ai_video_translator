@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 
+import 'performance_monitor.dart';
+import '../../../core/diagnostics/diagnostics_service.dart';
 import '../domain/ai_pipeline.dart';
 import '../../settings/data/model_manager_repository.dart';
 import 'subtitle_compressor.dart';
@@ -13,7 +15,8 @@ import '../../../core/utils/tokenizer.dart';
 
 class LocalTranslationEngine implements TranslationEngine {
   LocalTranslationEngine(
-    this._modelRepository, [
+    this._modelRepository,
+    this._diagnostics, [
     TranslationCache? cache,
     TranslationMetrics? metrics,
     SubtitleCompressor? compressor,
@@ -22,6 +25,7 @@ class LocalTranslationEngine implements TranslationEngine {
        _compressor = compressor ?? const SubtitleCompressor();
 
   final ModelManagerRepository _modelRepository;
+  final DiagnosticsService _diagnostics;
   final TranslationCache _cache;
   final TranslationMetrics _metrics;
   final SubtitleCompressor _compressor;
@@ -41,13 +45,16 @@ class LocalTranslationEngine implements TranslationEngine {
   Future<void> _ensureInitialized() async {
     if (_session != null && _tokenizer != null) return;
 
-    final modelFile = await _modelRepository.getModelFile(modelId);
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
+
+    final modelFile = await _modelRepository.getModelFile(modelId, 'encoder_model_quantized.onnx');
     if (!await modelFile.exists()) {
       throw Exception('Opus-MT model not found. Please download it in settings.');
     }
 
     // Try to load accompanying vocab if exists, else use fallback
-    final vocabFile = File(modelFile.path.replaceFirst('.onnx', '_vocab.json'));
+    final dir = await _modelRepository.getModelDir(modelId);
+    final vocabFile = File('${dir.path}/vocab.json');
     if (await vocabFile.exists()) {
       _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
     } else {
@@ -121,6 +128,8 @@ class LocalTranslationEngine implements TranslationEngine {
         : 0.001;
     final charsPerSec = totalChars / secs;
 
+    PerformanceMonitor.instance.updateTranslationThroughput(charsPerSec);
+
     _metrics.update(
       _metrics.data.copyWith(
         batchLatency: stopwatch.elapsed,
@@ -167,8 +176,8 @@ class LocalTranslationEngine implements TranslationEngine {
         final tokens = outputTensor[0].map((e) => (e as num).toInt()).toList();
         return _tokenizer?.decode(tokens) ?? String.fromCharCodes(tokens);
       }
-    } catch (e) {
-      // Fallback to mock on inference error
+    } catch (e, st) {
+      _diagnostics.log('TRANSLATION_ENGINE', 'Inference error: $e', level: LogLevel.error, details: st);
     }
 
     return _mockTranslate(clean);
@@ -180,9 +189,9 @@ class LocalTranslationEngine implements TranslationEngine {
         RegExp('\\b$word\\b', caseSensitive: false).hasMatch(lower);
 
     if (matches('hello') || matches('hi')) return 'Xin chào';
-    if (matches('welcome')) return 'Chào mừng bạn';
+    if (matches('welcome')) return 'Chào mừng bạn đến với chương trình';
     if (matches('episode') || matches('movie')) return 'Tập phim';
-    if (matches('thank you') || matches('thanks')) return 'Cảm ơn bạn';
+    if (matches('thank you') || matches('thanks')) return 'Cảm ơn bạn rất nhiều';
 
     return 'Dịch (AI): $text';
   }

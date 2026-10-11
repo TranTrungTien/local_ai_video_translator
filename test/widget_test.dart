@@ -5,6 +5,6 @@ import 'package:local_ai_video_translator/app/app.dart';
 void main() {
   testWidgets('TranslatorApp smoke test', (WidgetTester tester) async {
     await tester.pumpWidget(const ProviderScope(child: TranslatorApp()));
-    expect(find.text('Local AI Video Translator'), findsOneWidget);
+    expect(find.text('AI Video Translator'), findsOneWidget);
   });
 }
