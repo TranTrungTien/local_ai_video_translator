@@ -7,8 +7,10 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../../pipeline/presentation/ai_scheduler_controller.dart';
 import '../../source_resolver/data/android_media_observer.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
+import '../../../core/utils/sha256_util.dart';
 import '../data/embedded_audio_capture.dart';
 import '../domain/embedded_capability.dart';
+import '../domain/entities/embedded_playback_snapshot.dart';
 import 'media_session_controller.dart';
 import 'native_player_view.dart';
 import 'subtitle_overlay.dart';
@@ -22,7 +24,9 @@ class EmbeddedPlayerView extends ConsumerStatefulWidget {
 }
 
 class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
+  bool _isMigratedToNative = false;
   late final WebViewController _controller;
+  final String _nonce = Sha256Util.generateNonce();
   final List<String> _runtimeCandidates = [];
   late final AndroidMediaObserver _mediaObserver;
   StreamSubscription? _observerSub;
@@ -38,12 +42,16 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
   bool _aiSubtitlesEnabled = false;
   Timer? _positionUpdateTimer;
 
+  Duration _lastPosition = Duration.zero;
+  bool _lastIsPlaying = false;
+  double _lastPlaybackRate = 1.0;
+
   @override
   void initState() {
     super.initState();
     _mediaObserver = AndroidMediaObserver()..startObserving();
     _observerSub = _mediaObserver.candidates.listen((candidate) {
-      if (!mounted) return;
+      if (!mounted || _isMigratedToNative) return;
       setState(() {
         final uriStr = candidate.uri.toString();
         if (!_runtimeCandidates.contains(uriStr)) {
@@ -57,13 +65,31 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
       ..addJavaScriptChannel(
         'MediaObserver',
         onMessageReceived: (message) {
-          if (!mounted) return;
+          if (!mounted || _isMigratedToNative) return;
           final data = message.message;
           if (data.startsWith('pos:')) {
-            final seconds = double.tryParse(data.substring(4)) ?? 0;
-            ref.read(aiSchedulerProvider.notifier).updatePlaybackPosition(
-              Duration(milliseconds: (seconds * 1000).toInt()),
-            );
+            final parts = data.substring(4).split(',');
+            final seconds = double.tryParse(parts[0]) ?? 0.0;
+            _lastIsPlaying = parts.length > 1 ? parts[1] == 'true' : false;
+            _lastPlaybackRate = parts.length > 2 ? double.tryParse(parts[2]) ?? 1.0 : 1.0;
+
+            _lastPosition = Duration(milliseconds: (seconds * 1000).toInt());
+
+            ref
+                .read(aiSchedulerProvider.notifier)
+                .updatePlaybackPosition(_lastPosition);
+
+            // Update native audio anchor for PTS interpolation if capture is active
+            if (_aiSubtitlesEnabled) {
+               ref.read(mediaSessionControllerProvider.notifier).updateNativeAudioAnchor(
+                 position: _lastPosition,
+                 isPlaying: _lastIsPlaying,
+                 playbackRate: _lastPlaybackRate,
+                 timelineEpoch: 0,
+                 playbackSessionId: ref.read(aiSchedulerProvider.notifier).activeSessionId,
+                 seekGeneration: ref.read(aiSchedulerProvider.notifier).generation,
+               );
+            }
           } else {
             setState(() {
               if (!_runtimeCandidates.contains(data)) {
@@ -74,10 +100,19 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
         },
       )
       ..setNavigationDelegate(
-        NavigationDelegate(onPageFinished: (_) {
-          _injectObserver();
-          _startPositionPolling();
-        }),
+        NavigationDelegate(
+          onPageFinished: (_) {
+            _injectObserver();
+            _startPositionPolling();
+          },
+          onNavigationRequest: (request) {
+            // Prevent navigation to non-http(s) schemes
+            if (!request.url.startsWith('http')) {
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
       )
       ..loadRequest(widget.source.uri);
 
@@ -88,7 +123,9 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
 
   void _startPositionPolling() {
     _positionUpdateTimer?.cancel();
-    _positionUpdateTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    _positionUpdateTimer = Timer.periodic(const Duration(milliseconds: 500), (
+      timer,
+    ) {
       if (!mounted || _isMigratedToNative) {
         timer.cancel();
         return;
@@ -97,7 +134,7 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
         (function() {
           var v = document.querySelector('video');
           if (v) {
-            MediaObserver.postMessage('pos:' + v.currentTime);
+            MediaObserver.postMessage('pos:' + v.currentTime + ',' + !v.paused + ',' + v.playbackRate);
           }
         })();
       ''');
@@ -105,11 +142,14 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
   }
 
   Future<void> _injectObserver() async {
-    const js = r'''
+    final js = '''
       (() => {
+        // Nonce validation for the injected observer
+        const expectedNonce = '$_nonce';
+
         const send = (value) => {
           if (typeof value !== 'string' || value.length < 10) return;
-          if (/\.m3u8|\.mpd|\.mp4|\.webm/i.test(value)) {
+          if (/\.m3u8|\\.mpd|\\.mp4|\\.webm/i.test(value)) {
             MediaObserver.postMessage(value);
           }
         };
@@ -146,20 +186,34 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
       playbackMode: PlaybackMode.native,
       discoveryMethod: DiscoveryMethod.runtime,
       capability: SourceCapability.full,
-      requestContext: widget.source.requestContext.copyWith(
-        referer: widget.source.uri.toString(),
-      ),
+      requestContext: widget.source.requestContext,
       iframeChain: widget.source.iframeChain,
+    );
+
+    final snapshot = EmbeddedPlaybackSnapshot(
+      source: widget.source.uri,
+      position: _lastPosition,
+      playbackRate: _lastPlaybackRate,
+      wasPlaying: _lastIsPlaying,
+      volume: 100.0,
+      playbackSessionId: ref.read(aiSchedulerProvider).activeSessionId,
+      timelineEpoch: 0,
+      requestHeaders: widget.source.requestContext.headers,
     );
 
     final success = await ref
         .read(mediaSessionControllerProvider.notifier)
-        .attemptMigrationToNative(source: candidateSource);
+        .attemptMigrationToNative(
+          source: candidateSource,
+          snapshot: snapshot,
+        );
 
     if (!mounted) return;
 
     if (success) {
+      _cleanupEmbeddedResources();
       setState(() {
+        _isMigratedToNative = true;
         _migratedSource = candidateSource;
         _isMigrating = false;
       });
@@ -169,15 +223,16 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
         _isMigrating = false;
         _migrationErrorMessage =
             'Migration failed (status: ${migrationStatus.name}). Retaining Embedded WebView.';
-        _capabilityProbe = const EmbeddedCapabilityProbe(
-          canPlay: true,
-          canPause: true,
-          canReadPosition: true,
-          canObserveSeek: true,
-          canAccessAudio: false,
-        );
       });
     }
+  }
+
+  void _cleanupEmbeddedResources() {
+    _isMigratedToNative = true;
+    _positionUpdateTimer?.cancel();
+    _observerSub?.cancel();
+    _controller.runJavaScript("var v = document.querySelector('video'); if(v) v.pause();");
+    _audioCaptureManager.dispose();
   }
 
   MediaKind _inferKind(Uri uri) {

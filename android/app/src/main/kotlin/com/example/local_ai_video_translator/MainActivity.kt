@@ -26,6 +26,7 @@ import kotlin.concurrent.thread
 class MainActivity : FlutterActivity() {
     companion object {
         const val MEDIA_EVENTS_CHANNEL = "local_ai_video_translator/media_events"
+        const val AUDIO_PCM_CHANNEL = "local_ai_video_translator/audio_pcm"
         const val NATIVE_RESOLVER_CHANNEL = "local_ai_video_translator/native_resolver"
         const val REQUEST_MEDIA_PROJECTION = 1001
 
@@ -53,6 +54,18 @@ class MainActivity : FlutterActivity() {
 
                 override fun onCancel(arguments: Any?) {
                     eventSink = null
+                }
+            })
+
+        // EventChannel for PCM audio data
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_PCM_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    AudioPcmBroker.setSink(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    AudioPcmBroker.setSink(null)
                 }
             })
 
@@ -145,6 +158,10 @@ class MainActivity : FlutterActivity() {
                             result.success(capabilities)
                         }
 
+                        "getMonotonicUs" -> {
+                            result.success(System.nanoTime() / 1000)
+                        }
+
                         "reportObservedResource" -> {
                             val urlStr = call.argument<String>("url")
                             val mime = call.argument<String>("mimeType") ?: ""
@@ -157,6 +174,29 @@ class MainActivity : FlutterActivity() {
                                     )
                                 )
                             }
+                            result.success(true)
+                        }
+
+                        "updateAudioAnchor" -> {
+                            val mediaPositionUs = call.argument<Long>("mediaPositionUs") ?: 0L
+                            val anchorMonotonicUs = call.argument<Long>("anchorMonotonicUs") ?: 0L
+                            val playbackRate = call.argument<Double>("playbackRate") ?: 1.0
+                            val isPlaying = call.argument<Boolean>("isPlaying") ?: false
+                            val isBuffering = call.argument<Boolean>("isBuffering") ?: false
+                            val timelineEpoch = call.argument<Int>("timelineEpoch") ?: 0
+                            val playbackSessionId = call.argument<String>("playbackSessionId") ?: ""
+                            val seekGeneration = call.argument<Int>("seekGeneration") ?: 0
+
+                            AudioPcmBroker.updateAnchor(
+                                mediaPositionUs,
+                                anchorMonotonicUs,
+                                playbackRate,
+                                isPlaying,
+                                isBuffering,
+                                timelineEpoch,
+                                playbackSessionId,
+                                seekGeneration
+                            )
                             result.success(true)
                         }
 
@@ -193,17 +233,22 @@ class MainActivity : FlutterActivity() {
 class ObservingWebViewClient(
     private val onResource: (String) -> Unit,
 ) : WebViewClient() {
+    private val mediaPatterns = listOf(".m3u8", ".mpd", ".mp4", ".webm", ".m4v")
+
     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
         request?.url?.toString()?.let { url ->
-            onResource(url)
-            MainActivity.emitMediaEvent(
-                mapOf(
-                    "url" to url,
-                    "method" to (request.method ?: "GET"),
-                    "isForMainFrame" to request.isForMainFrame,
-                    "timestamp" to System.currentTimeMillis()
+            val isMedia = mediaPatterns.any { url.contains(it, ignoreCase = true) }
+            if (isMedia || request.isForMainFrame) {
+                onResource(url)
+                MainActivity.emitMediaEvent(
+                    mapOf(
+                        "url" to url,
+                        "method" to (request.method ?: "GET"),
+                        "isForMainFrame" to request.isForMainFrame,
+                        "timestamp" to System.currentTimeMillis()
+                    )
                 )
-            )
+            }
         }
         return super.shouldInterceptRequest(view, request)
     }

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';
+import '../../../core/utils/cancellation_token.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import 'ffmpeg_audio_extractor.dart';
@@ -12,6 +13,10 @@ abstract interface class PcmAudioExtractor {
   Stream<PcmChunk> extractPcmStream(
     ResolvedSource source, {
     Duration? startPosition,
+    String playbackSessionId = '',
+    int timelineEpoch = 0,
+    int seekGeneration = 0,
+    CancellationToken? cancellationToken,
   });
 }
 
@@ -29,6 +34,10 @@ class NativePcmAudioExtractor implements PcmAudioExtractor {
   Stream<PcmChunk> extractPcmStream(
     ResolvedSource source, {
     Duration? startPosition,
+    String playbackSessionId = '',
+    int timelineEpoch = 0,
+    int seekGeneration = 0,
+    CancellationToken? cancellationToken,
   }) async* {
     // Chỉ yêu cầu MediaProjection (Share Screen) nếu là nguồn nhúng (Webview)
     // Nguồn local hoặc direct stream thì không cần.
@@ -52,30 +61,40 @@ class NativePcmAudioExtractor implements PcmAudioExtractor {
       yield* FfmpegPcmAudioExtractor(_diagnostics).extractPcmStream(
         source,
         startPosition: startPosition,
+        playbackSessionId: playbackSessionId,
+        timelineEpoch: timelineEpoch,
+        seekGeneration: seekGeneration,
+        cancellationToken: cancellationToken,
       );
       return;
     }
 
-    // 2. Listen to audio chunks from EventChannel (dành cho MediaProjection)
-    int? firstTimestamp;
+    cancellationToken?.addListener(() {
+      _methodChannel.invokeMethod('stopAudioCapture');
+      if (!controller.isClosed) {
+        controller.close();
+      }
+    });
 
+    // 2. Listen to audio chunks from EventChannel (dành cho MediaProjection)
     final subscription = _eventChannel.receiveBroadcastStream().listen((event) {
       if (event is Map && event['type'] == 'audio_chunk') {
-        final data = event['data'] as Uint8List;
+        final data = event['pcmBytes'] as Uint8List;
         final sampleRate = event['sampleRate'] as int;
-        final channels = event['channels'] as int;
-        final timestamp = event['timestamp'] as int;
-
-        // Calculate PTS based on native timestamp comparison
-        firstTimestamp ??= timestamp;
-        final elapsedMs = timestamp - firstTimestamp!;
-        final currentPts = (startPosition ?? Duration.zero) + Duration(milliseconds: elapsedMs);
+        final channels = event['channelCount'] as int;
+        final mediaPtsUs = event['mediaPtsUs'] as int;
+        final playbackSessionId = event['playbackSessionId'] as String? ?? '';
+        final timelineEpoch = event['timelineEpoch'] as int? ?? 0;
+        final seekGeneration = event['seekGeneration'] as int? ?? 0;
 
         controller.add(PcmChunk(
-          pts: currentPts,
+          pts: Duration(microseconds: mediaPtsUs),
           sampleRate: sampleRate,
           channels: channels,
           bytes: data,
+          playbackSessionId: playbackSessionId,
+          timelineEpoch: timelineEpoch,
+          seekGeneration: seekGeneration,
         ));
       }
     });
@@ -100,6 +119,10 @@ class DefaultPcmAudioExtractor implements PcmAudioExtractor {
   Stream<PcmChunk> extractPcmStream(
     ResolvedSource source, {
     Duration? startPosition,
+    String playbackSessionId = '',
+    int timelineEpoch = 0,
+    int seekGeneration = 0,
+    CancellationToken? cancellationToken,
   }) async* {
     // Media PTS audio stream generator
     // Generates 16kHz mono PCM chunks annotated with media Presentation Timestamps (PTS)

@@ -12,10 +12,7 @@ import 'source_resolver_controller.dart';
 class SourceAnalysisPage extends ConsumerStatefulWidget {
   final String inputUrl;
 
-  const SourceAnalysisPage({
-    super.key,
-    required this.inputUrl,
-  });
+  const SourceAnalysisPage({super.key, required this.inputUrl});
 
   @override
   ConsumerState<SourceAnalysisPage> createState() => _SourceAnalysisPageState();
@@ -49,51 +46,50 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
           .read(sourceResolverControllerProvider.notifier)
           .resolve(widget.inputUrl);
 
-      if (mounted) {
-        if (resolved == null || (resolved.failureReason != null && resolved.candidates.isEmpty)) {
-          setState(() {
-            _isFailed = true;
-            _resolvedSource = resolved;
-          });
-          return;
-        }
+      if (!mounted) return;
 
+      if (resolved == null ||
+          (resolved.failureReason != null && resolved.candidates.isEmpty)) {
+        final uri =
+            Uri.tryParse(widget.inputUrl) ??
+            Uri.parse('https://example.com/video.m3u8');
         setState(() {
-          _currentStep = 3;
-          _resolvedSource = resolved;
+          _isFailed = true;
+          _resolvedSource =
+              resolved ??
+              ResolvedSource(
+                input: widget.inputUrl,
+                normalizedUri: uri,
+                finalUri: uri,
+                kind: widget.inputUrl.contains('file_picker')
+                    ? MediaKind.localFile
+                    : MediaKind.hls,
+                playbackMode: PlaybackMode.native,
+                discoveryMethod: DiscoveryMethod.input,
+                capability: SourceCapability.full,
+              );
         });
+        return;
+      }
+
+      setState(() {
+        _currentStep = 3;
+        _resolvedSource = resolved;
+      });
+
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted) {
+        setState(() => _currentStep = 4);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isFailed = true);
-      }
-    if (mounted) {
-      final uri = Uri.tryParse(widget.inputUrl) ?? Uri.parse('https://example.com/video.m3u8');
-      setState(() {
-        _currentStep = 3;
-        _resolvedSource = resolved ??
-            ResolvedSource(
-              input: widget.inputUrl,
-              normalizedUri: uri,
-              finalUri: uri,
-              kind: widget.inputUrl.contains('file_picker') ? MediaKind.localFile : MediaKind.hls,
-              playbackMode: PlaybackMode.native,
-              discoveryMethod: DiscoveryMethod.input,
-              capability: SourceCapability.full,
-            );
-      });
-
-      // Thêm độ trễ nhỏ để hoàn tất bước cuối (chuyển từ xoay sang tích xanh)
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (mounted) {
-        setState(() => _currentStep = 4);
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Xác định định dạng hiển thị dựa trên loại nguồn
     String formatText = 'HLS Adaptive Stream';
     String formatLabel = 'm3u8';
     String badgeLabel = 'HLS 1080p';
@@ -175,7 +171,8 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                   ),
                   StepTimelineTile(
                     title: '3. Xác thực HTTP HEAD & Băng thông Stream',
-                    subtitle: 'Kiểm tra Content-Type, CORS & Byte Range Support',
+                    subtitle:
+                        'Kiểm tra Content-Type, CORS & Byte Range Support',
                     stepState: _getStepState(2),
                   ),
                   StepTimelineTile(
@@ -189,7 +186,7 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
             ),
             const SizedBox(height: 24),
 
-            // Media Candidate Spec Card (Shown when Step 3 Complete)
+            // Media Candidate Spec Card
             if (_currentStep >= 3) ...[
               AppGlassCard(
                 padding: const EdgeInsets.all(20),
@@ -202,8 +199,11 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                       children: [
                         const Row(
                           children: [
-                            Icon(Icons.verified_rounded,
-                                color: AppColors.success, size: 20),
+                            Icon(
+                              Icons.verified_rounded,
+                              color: AppColors.success,
+                              size: 20,
+                            ),
                             SizedBox(width: 8),
                             Text(
                               'Đã xác thực Luồng Stream',
@@ -216,11 +216,8 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                           ],
                         ),
                         PillBadge(
-                          label: _resolvedSource?.kind.name.toUpperCase() ?? 'VIDEO',
-                          backgroundColor: const Color(0x3310B981),
                           label: badgeLabel,
-                          backgroundColor: const Color(0x3310B981),
-                          textColor: AppColors.success,
+                          backgroundColor: AppColors.primaryGlow,
                         ),
                       ],
                     ),
@@ -231,8 +228,12 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                           ? 'm3u8 (HLS Adaptive Stream)'
                           : _resolvedSource?.kind.name ?? 'Unknown',
                     ),
-                    _buildSpecRow('Tiêu đề:', _resolvedSource?.input.split(RegExp(r'[/\\]')).last ?? 'Direct Stream Video'),
-                    _buildSpecRow('Định dạng:', '$formatLabel ($formatText)'),
+                    _buildSpecRow(
+                      'Tiêu đề:',
+                      _resolvedSource?.input.split(RegExp(r'[/\\]')).last ??
+                          'Direct Stream Video',
+                    ),
+                    _buildSpecRow('Loại Stream:', '$formatLabel ($formatText)'),
                     if (_resolvedSource?.manualSubtitlePath != null)
                       _buildSpecRow(
                         'Phụ đề:',
@@ -258,7 +259,6 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
               ),
               const SizedBox(height: 24),
 
-              // Action Button to Player
               GlowButton(
                 label: 'Bắt đầu Phát & Dịch AI',
                 icon: Icons.play_arrow_rounded,
@@ -267,6 +267,15 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
                     context.push('/player', extra: _resolvedSource);
                   }
                 },
+              ),
+            ],
+            if (_isFailed) ...[
+              const SizedBox(height: 12),
+              const Center(
+                child: Text(
+                  'Không thể phân tích nguồn video. Vui lòng kiểm tra lại URL.',
+                  style: TextStyle(color: AppColors.error, fontSize: 12),
+                ),
               ),
             ],
           ],
@@ -291,10 +300,7 @@ class _SourceAnalysisPageState extends ConsumerState<SourceAnalysisPage> {
             width: 100,
             child: Text(
               label,
-              style: const TextStyle(
-                fontSize: 12,
-                color: AppColors.textMuted,
-              ),
+              style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
             ),
           ),
           Expanded(

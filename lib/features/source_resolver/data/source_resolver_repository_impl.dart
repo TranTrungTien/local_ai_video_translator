@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/utils/cancellation_token.dart';
 import '../../../core/utils/media_url.dart';
 import '../domain/entities/resolved_source.dart';
 import '../domain/repositories/source_resolver_repository.dart';
@@ -27,7 +28,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
   static const int _kMaxProbeBytes = 1 * 1024 * 1024; // 1 MB
 
   @override
-  Future<ResolvedSource> resolve(String input) async {
+  Future<ResolvedSource> resolve(String input, {CancellationToken? cancellationToken}) async {
     final stopwatch = Stopwatch()..start();
     final trimmed = input.trim();
     if (trimmed.isEmpty) {
@@ -38,6 +39,10 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     final diagnostics = <String>[];
     final rejectionReasons = <String, String>{};
     final cancelToken = CancelToken();
+
+    cancellationToken?.addListener(() {
+      cancelToken.cancel('User cancelled resolution');
+    });
 
     // Initialize RequestContext with Referer and User-Agent based on the input URL
     final requestContext = RequestContext(

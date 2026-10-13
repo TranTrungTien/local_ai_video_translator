@@ -12,30 +12,35 @@ import 'subtitle_language_detector.dart';
 import 'subtitle_parser.dart';
 import '../domain/repositories/subtitle_repository.dart';
 
-class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvider {
+class SubtitleRepositoryImpl
+    implements SubtitleRepository, SubtitleTrackProvider {
   SubtitleRepositoryImpl(
     this._dio, [
     SubtitleParser? parser,
     SubtitleLanguageDetector? languageDetector,
     SubtitleSelectionPolicy? selectionPolicy,
   ]) : _parser = parser ?? const SubtitleParser(),
-       _languageDetector = languageDetector ?? const SubtitleLanguageDetector(),
-       _selectionPolicy = selectionPolicy ?? const SubtitleSelectionPolicy();
+       _languageDetector = languageDetector ?? const SubtitleLanguageDetector();
 
   final Dio _dio;
   final SubtitleParser _parser;
   final SubtitleLanguageDetector _languageDetector;
-  final SubtitleSelectionPolicy _selectionPolicy;
 
   @override
   Future<List<SubtitleTrack>> findSubtitleTracks(ResolvedSource source) async {
     final tracks = <SubtitleTrack>[];
 
     if (source.kind == MediaKind.hls) {
-      final hlsTracks = await _extractHlsSubtitles(source.uri, source.requestContext);
+      final hlsTracks = await _extractHlsSubtitles(
+        source.uri,
+        source.requestContext,
+      );
       tracks.addAll(hlsTracks);
     } else if (source.kind == MediaKind.dash) {
-      final dashTracks = await _extractDashSubtitles(source.uri, source.requestContext);
+      final dashTracks = await _extractDashSubtitles(
+        source.uri,
+        source.requestContext,
+      );
       tracks.addAll(dashTracks);
     }
 
@@ -115,7 +120,10 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
         dotAll: true,
       );
       final langRx = RegExp(r'lang="([^"]+)"', caseSensitive: false);
-      final baseUriRx = RegExp(r'<BaseURL>(.*?)</BaseURL>', caseSensitive: false);
+      final baseUriRx = RegExp(
+        r'<BaseURL>(.*?)</BaseURL>',
+        caseSensitive: false,
+      );
 
       for (final match in adaptSetRx.allMatches(content)) {
         final setContent = match.group(1)!;
@@ -138,7 +146,9 @@ class SubtitleRepositoryImpl implements SubtitleRepository, SubtitleTrackProvide
             language: lang,
             title: 'DASH Subtitle ($lang)',
             uri: subUri,
-            format: setContent.contains('vtt') ? SubtitleFormat.webvtt : SubtitleFormat.hlsSegment,
+            format: setContent.contains('vtt')
+                ? SubtitleFormat.webvtt
+                : SubtitleFormat.hlsSegment,
             isTargetLanguage: isVi,
             requestContext: context,
           ),

@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+import '../../../core/utils/cancellation_token.dart';
+
 class TimedTextSegment {
   const TimedTextSegment({
     required this.start,
@@ -17,11 +20,17 @@ class PcmChunk {
     required this.sampleRate,
     required this.channels,
     required this.bytes,
+    this.playbackSessionId = '',
+    this.timelineEpoch = 0,
+    this.seekGeneration = 0,
   });
   final Duration pts;
   final int sampleRate;
   final int channels;
   final Uint8List bytes;
+  final String playbackSessionId;
+  final int timelineEpoch;
+  final int seekGeneration;
 }
 
 abstract interface class SpeechToTextEngine {
@@ -38,10 +47,16 @@ abstract interface class TranslationEngine {
   Future<List<TimedTextSegment>> translate(
     List<TimedTextSegment> segments, {
     required String targetLanguage,
+    CancellationToken? cancellationToken,
   });
 }
 
 abstract interface class TextToSpeechEngine {
   bool get installed;
   Future<Uint8List> synthesize(String text, {required Duration targetDuration});
+  Future<Uint8List> synthesizeWithCancellation(
+    String text, {
+    required Duration targetDuration,
+    required CancellationToken cancellationToken,
+  });
 }

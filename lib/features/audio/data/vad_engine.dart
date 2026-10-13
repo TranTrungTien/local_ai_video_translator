@@ -26,7 +26,7 @@ abstract interface class VoiceActivityDetector {
   bool get installed;
   Stream<SpeechSegment> detectSpeech(
     Stream<PcmChunk> audioStream, {
-    void Function(Duration pts)? onProgress,
+    void Function(Duration pts, Duration? activeSpeechStart)? onProgress,
   });
 }
 
@@ -50,8 +50,10 @@ class LocalVadEngine implements VoiceActivityDetector {
   static const String modelId = 'vad_silero';
 
   OrtSession? _session;
-  // Silero VAD v5 uses a single state tensor [2, 1, 128] instead of separate h and c [2, 1, 64]
   final Float32List _state = Float32List(2 * 1 * 128);
+
+  // Tái sử dụng bộ đệm 512 float32 để giảm thiểu Garbage Collection
+  final Float32List _windowFloatBuffer = Float32List(512);
 
   @override
   bool get installed => true;
@@ -59,39 +61,68 @@ class LocalVadEngine implements VoiceActivityDetector {
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
 
-    final modelFile = await _modelRepository.getModelFile(modelId, 'silero_vad.onnx');
+    final modelFile = await _modelRepository.getModelFile(
+      modelId,
+      'silero_vad.onnx',
+    );
     if (!await modelFile.exists()) {
       return;
     }
 
     final sessionOptions = OrtSessionOptions();
-    _session = await OnnxRuntime().createSession(modelFile.path, options: sessionOptions);
+    _session = await OnnxRuntime().createSession(
+      modelFile.path,
+      options: sessionOptions,
+    );
   }
 
   @override
   Stream<SpeechSegment> detectSpeech(
     Stream<PcmChunk> audioStream, {
-    void Function(Duration pts)? onProgress,
+    void Function(Duration pts, Duration? activeSpeechStart)? onProgress,
   }) async* {
     await _ensureInitialized();
     _resetState();
 
     final windowBuffer = BytesBuilder();
-    const windowSizeSamples = 512;
-    const windowSizeBytes = windowSizeSamples * 2;
+    const windowSizeBytes = 512 * 2;
     const windowDuration = Duration(milliseconds: 32);
 
     final List<PcmChunk> preRollBuffer = [];
     _RawSpeechRange? active;
     _RawSpeechRange? pendingGap;
 
-    var windowOffset = Duration.zero;
-    var lastBasePts = Duration.zero;
+    Duration? bufferStartPts;
 
     await for (final chunk in audioStream) {
-      if (chunk.pts != lastBasePts) {
-        windowOffset = Duration.zero;
-        lastBasePts = chunk.pts;
+      final bytesPerMs = (chunk.sampleRate * 1 * 2) ~/ 1000;
+
+      if (bufferStartPts == null) {
+        bufferStartPts = chunk.pts;
+      } else {
+        // Check if the new chunk is continuous with the data in the buffer
+        final expectedNextPts = bufferStartPts +
+            Duration(milliseconds: windowBuffer.length ~/ bytesPerMs);
+        final drift = (chunk.pts - expectedNextPts).inMilliseconds.abs();
+
+        if (drift > 100) {
+          // Discontinuity (e.g., seek), clear old buffer and state
+          windowBuffer.clear();
+          bufferStartPts = chunk.pts;
+          preRollBuffer.clear();
+
+          if (active != null && active.end - active.start >= minSpeechDuration) {
+             yield SpeechSegment(
+              start: active.start,
+              end: active.end,
+              chunks: List.unmodifiable(active.chunks),
+            );
+          }
+
+          active = null;
+          pendingGap = null;
+          _resetState();
+        }
       }
 
       windowBuffer.add(chunk.bytes);
@@ -103,26 +134,35 @@ class LocalVadEngine implements VoiceActivityDetector {
           windowBuffer.add(windowBytes.sublist(windowSizeBytes));
         }
 
-        final currentPts = chunk.pts + windowOffset;
+        final currentPts = bufferStartPts!;
         final currentChunk = PcmChunk(
           pts: currentPts,
           sampleRate: chunk.sampleRate,
           channels: 1,
           bytes: currentWindowBytes,
+          playbackSessionId: chunk.playbackSessionId,
+          timelineEpoch: chunk.timelineEpoch,
+          seekGeneration: chunk.seekGeneration,
         );
 
         if (onProgress != null) {
-          onProgress(currentPts + windowDuration);
+          onProgress?.call(currentPts + windowDuration, active?.start);
         }
 
-        final isSpeech = await _isSpeechData(currentWindowBytes, chunk.sampleRate);
-        windowOffset += windowDuration;
+        final isSpeech = await _isSpeechData(
+          currentWindowBytes,
+          chunk.sampleRate,
+        );
+
+        bufferStartPts += windowDuration;
 
         if (isSpeech) {
           active ??= _RawSpeechRange(
-            start: preRollBuffer.isNotEmpty ? preRollBuffer.first.pts : currentPts,
+            start: preRollBuffer.isNotEmpty
+                ? preRollBuffer.first.pts
+                : currentPts,
             end: currentPts + windowDuration,
-            chunks: [...preRollBuffer], // preRollBuffer is already valid
+            chunks: [...preRollBuffer],
           );
 
           if (pendingGap != null) {
@@ -155,9 +195,9 @@ class LocalVadEngine implements VoiceActivityDetector {
               pendingGap = null;
             }
           } else {
-            // Lưu vào pre-roll khi đang im lặng
             preRollBuffer.add(currentChunk);
-            final totalPreRoll = preRollBuffer.length * windowDuration.inMilliseconds;
+            final totalPreRoll =
+                preRollBuffer.length * windowDuration.inMilliseconds;
             if (totalPreRoll > preRollDuration.inMilliseconds) {
               preRollBuffer.removeAt(0);
             }
@@ -166,7 +206,6 @@ class LocalVadEngine implements VoiceActivityDetector {
       }
     }
 
-    // Yield final segment if active
     if (active != null && active.end - active.start >= minSpeechDuration) {
       yield SpeechSegment(
         start: active.start,
@@ -185,16 +224,18 @@ class LocalVadEngine implements VoiceActivityDetector {
     if (session == null) return _isSpeechEnergy(bytes);
 
     try {
-      final float32Audio = _pcm16ToFloat32(bytes);
-      final inputOrt = await OrtValue.fromList(float32Audio, [1, float32Audio.length]);
-      final srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), [1]);
+      _fillPcm16ToFloat32Buffer(bytes, _windowFloatBuffer);
+
+      final inputOrt = await OrtValue.fromList(_windowFloatBuffer, [
+        1,
+        _windowFloatBuffer.length,
+      ]);
+      final srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), [
+        1,
+      ]);
       final stateOrt = await OrtValue.fromList(_state, [2, 1, 128]);
 
-      final inputs = {
-        'input': inputOrt,
-        'sr': srOrt,
-        'state': stateOrt,
-      };
+      final inputs = {'input': inputOrt, 'sr': srOrt, 'state': stateOrt};
 
       final outputs = await session.run(inputs);
 
@@ -214,9 +255,23 @@ class LocalVadEngine implements VoiceActivityDetector {
         return probability >= threshold;
       }
     } catch (e, st) {
-      _diagnostics.log('VAD_ENGINE', 'Inference error: $e', level: LogLevel.error, details: st);
+      _diagnostics.log(
+        'VAD_ENGINE',
+        'Inference error: $e',
+        level: LogLevel.error,
+        details: st,
+      );
     }
     return _isSpeechEnergy(bytes);
+  }
+
+  void _fillPcm16ToFloat32Buffer(Uint8List bytes, Float32List targetBuffer) {
+    final int16Data = bytes.buffer.asInt16List();
+    const double scale = 1.0 / 32768.0;
+    final len = min(int16Data.length, targetBuffer.length);
+    for (var i = 0; i < len; i++) {
+      targetBuffer[i] = int16Data[i] * scale;
+    }
   }
 
   void _updateState(Float32List state, List<List<List<double>>> newValue) {
@@ -238,15 +293,6 @@ class LocalVadEngine implements VoiceActivityDetector {
     }
     final energy = sqrt(sumSquare / samples.length);
     return energy >= 250.0;
-  }
-
-  Float32List _pcm16ToFloat32(Uint8List bytes) {
-    final int16Data = bytes.buffer.asInt16List();
-    final float32Data = Float32List(int16Data.length);
-    for (var i = 0; i < int16Data.length; i++) {
-      float32Data[i] = int16Data[i] / 32768.0;
-    }
-    return float32Data;
   }
 
   void dispose() {

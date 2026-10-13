@@ -90,16 +90,17 @@ class AudioCaptureService : Service() {
             thread {
                 val buffer = ByteArray(bufferSize)
                 while (isCapturing) {
+                    val captureMonotonicUs = System.nanoTime() / 1000
                     val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     if (read > 0) {
-                        val audioData = buffer.copyOf(read)
-                        MainActivity.emitMediaEvent(mapOf(
-                            "type" to "audio_chunk",
-                            "data" to audioData,
-                            "sampleRate" to sampleRate,
-                            "channels" to 1,
-                            "timestamp" to System.currentTimeMillis()
-                        ))
+                        AudioPcmBroker.emitAudioChunk(
+                            pcmBytes = buffer.copyOf(read),
+                            sampleRate = sampleRate,
+                            channelCount = 1,
+                            encoding = audioFormat,
+                            captureMonotonicUs = captureMonotonicUs,
+                            durationUs = (read.toLong() * 1_000_000L) / (sampleRate * 2)
+                        )
                     }
                 }
             }

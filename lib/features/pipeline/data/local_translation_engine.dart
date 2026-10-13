@@ -12,6 +12,7 @@ import 'subtitle_compressor.dart';
 import 'translation_cache.dart';
 import 'translation_metrics.dart';
 import '../../../core/utils/tokenizer.dart';
+import '../../../core/utils/cancellation_token.dart';
 
 class LocalTranslationEngine implements TranslationEngine {
   LocalTranslationEngine(
@@ -74,10 +75,14 @@ class LocalTranslationEngine implements TranslationEngine {
   Future<List<TimedTextSegment>> translate(
     List<TimedTextSegment> segments, {
     required String targetLanguage,
+    CancellationToken? cancellationToken,
   }) async {
     if (segments.isEmpty) return const [];
+    final token = cancellationToken ?? CancellationToken();
+    token.throwIfCancelled();
 
     await _ensureInitialized();
+    token.throwIfCancelled();
 
     final stopwatch = Stopwatch()..start();
     final translatedSegments = <TimedTextSegment>[];
@@ -85,9 +90,11 @@ class LocalTranslationEngine implements TranslationEngine {
     // Batching segments for latency/memory balance
     const batchSize = 6;
     for (var i = 0; i < segments.length; i += batchSize) {
+      token.throwIfCancelled();
       final batch = segments.skip(i).take(batchSize).toList();
 
       for (final seg in batch) {
+        token.throwIfCancelled();
         _contextHistory.add(seg);
         if (_contextHistory.length > 5) _contextHistory.removeAt(0);
 
@@ -101,6 +108,7 @@ class LocalTranslationEngine implements TranslationEngine {
             targetLanguage,
             _contextHistory,
           );
+          token.throwIfCancelled();
           translatedText = _compressor.compress(translatedText);
           _cache.put(seg.text, translatedText);
         }

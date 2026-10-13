@@ -46,5 +46,13 @@ class DubbingRepository {
 
   void clear() {
     _segments.clear();
+    _lastActiveId = null;
+    _activeIdController.add(null);
+  }
+
+  void prune(Duration currentPts) {
+    // Keep 2 minutes of history, prune anything older
+    final cutoff = currentPts - const Duration(minutes: 2);
+    _segments.removeWhere((pts, seg) => seg.endPts < cutoff);
   }
 }

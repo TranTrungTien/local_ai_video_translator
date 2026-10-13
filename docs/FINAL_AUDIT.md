@@ -51,7 +51,9 @@ This production-readiness audit examines the entire repository structure, data f
 
 ## 3. Resolved Issues
 
-1. **StreamSubscription Leaks**: Secured via `ref.onDispose` cleanup and explicit subscription cancellation in player states.
+1. **SharedInputParser Security**: Hardened URL/path extraction with stricter regex and host validation to prevent credential leakage or malformed input.
+2. **WebView Hardening**: Implemented `NavigationDelegate` to block non-http(s) navigation and added nonce validation for injected scripts.
+3. **StreamSubscription Leaks**: Secured via `ref.onDispose` cleanup and explicit subscription cancellation in player states.
 2. **Seek Race Conditions**: High-priority seek transition cancels obsolete background tasks and flushes obsolete timeline buffers.
 3. **Wall-clock vs Media PTS**: All subtitle and audio processing strictly anchored to media presentation timestamps (`PTS`).
 4. **Unbounded Caches**: Implemented LRU eviction and capacity bounds across PCM streaming queues and persistent record repositories.

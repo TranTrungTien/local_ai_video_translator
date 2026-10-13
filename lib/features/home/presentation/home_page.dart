@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
@@ -21,41 +20,12 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   final _controller = TextEditingController();
-  StreamSubscription<List<SharedMediaFile>>? _shareSubscription;
 
   bool _isPickingFile = false;
 
   @override
   void initState() {
     super.initState();
-    _listenToShares();
-  }
-
-  void _listenToShares() {
-    _shareSubscription = ReceiveSharingIntent.instance.getMediaStream().listen(
-      _consumeSharedItems,
-    );
-    ReceiveSharingIntent.instance.getInitialMedia().then(_consumeSharedItems);
-  }
-
-  void _consumeSharedItems(List<SharedMediaFile> items) {
-    if (items.isEmpty || !mounted) return;
-
-    final rawPath = items.first.path;
-    final value = SharedInputParser.extract(rawPath);
-
-    // Reset so the same intent doesn't trigger again on rebuild
-    ReceiveSharingIntent.instance.reset();
-
-    if (value == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không tìm thấy liên kết video hợp lệ.')),
-      );
-      return;
-    }
-
-    _controller.text = value;
-    unawaited(_resolve(value));
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -126,7 +96,6 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   void dispose() {
-    _shareSubscription?.cancel();
     _controller.dispose();
     super.dispose();
   }

@@ -1,9 +1,6 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart' hide AudioTrack;
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/constants/app_constants.dart';
@@ -27,7 +24,6 @@ class NativePlayerView extends ConsumerStatefulWidget {
 
 class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
   VideoController? _videoController;
-  bool _userPaused = false;
 
   @override
   void initState() {
@@ -41,31 +37,16 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
       final p = session.player;
 
       if (p != null && mounted) {
-        final controller = await VideoController.create(p.handle);
+        final controller = VideoController(p);
         if (mounted) {
           setState(() {
             _videoController = controller;
           });
         }
       }
-    _player = Player();
-    _videoController = VideoController(_player);
-
-    _player.open(
-      Media(widget.source.uri.toString(), httpHeaders: widget.source.headers),
-      play: true,
-    );
 
       ref.read(aiSchedulerProvider.notifier).initializeForSource(widget.source);
     });
-  }
-
-  @override
-  void dispose() {
-    _videoController?.dispose();
-    _positionSub?.cancel();
-    _player.dispose();
-    super.dispose();
   }
 
   @override
@@ -83,34 +64,15 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
     final sessionSnapshot = ref.watch(mediaSessionControllerProvider);
     final player = ref.read(nativeMediaSessionProvider).player;
 
-    // Auto-pause when AI subtitle buffer is exhausted
     ref.listen<AiSchedulerState>(aiSchedulerProvider, (previous, next) {
       if (player == null) return;
 
       if (next.isBufferingForAi && player.state.playing) {
         ref.read(mediaSessionControllerProvider.notifier).pause();
-      } else if (!next.isBufferingForAi &&
-                 previous?.isBufferingForAi == true &&
-                 !_userPaused) {
-        // Only resume if the user hadn't manually paused
+      } else if (!next.isBufferingForAi && previous?.isBufferingForAi == true) {
         ref.read(mediaSessionControllerProvider.notifier).play();
       }
     });
-
-    // Audio Ducking: Giảm âm lượng video khi có lồng tiếng AI phát
-    ref.listen<AsyncValue<String?>>(
-      activeDubIdProvider,
-      (previous, next) {
-        if (ref.read(dubbingControllerProvider)) {
-          final activeId = next.value;
-          if (activeId != null) {
-            _player.setVolume(25.0); // Set to 25% for ducking
-          } else {
-            _player.setVolume(100.0);
-          }
-        }
-      },
-    );
 
     if (sessionSnapshot.status == PlayerStatus.error) {
       return ColoredBox(
@@ -259,7 +221,6 @@ class _TrackSelectorOverlay extends ConsumerWidget {
                   },
                 ),
               ],
-              // Nút Bật/Tắt Lồng tiếng (AI Dubbing)
               IconButton(
                 icon: Icon(
                   ref.watch(dubbingControllerProvider)
@@ -271,8 +232,9 @@ class _TrackSelectorOverlay extends ConsumerWidget {
                       : Colors.white,
                 ),
                 tooltip: 'AI Vietnamese Dubbing',
-                onPressed: () =>
-                    ref.read(dubbingControllerProvider.notifier).toggleDubbing(),
+                onPressed: () => ref
+                    .read(dubbingControllerProvider.notifier)
+                    .toggleDubbing(),
               ),
               if (subtitleTracks.isNotEmpty) ...[
                 PopupMenuButton<PlayerSubtitleTrack?>(

@@ -9,6 +9,7 @@ import '../../../core/diagnostics/diagnostics_service.dart';
 import '../domain/ai_pipeline.dart';
 import '../../settings/data/model_manager_repository.dart';
 import 'tts_cache.dart';
+import '../../../core/utils/cancellation_token.dart';
 
 class LocalTextToSpeechEngine implements TextToSpeechEngine {
   LocalTextToSpeechEngine(
@@ -52,13 +53,29 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
     String text, {
     required Duration targetDuration,
   }) async {
+    return synthesizeWithCancellation(
+      text,
+      targetDuration: targetDuration,
+      cancellationToken: CancellationToken(),
+    );
+  }
+
+  @override
+  Future<Uint8List> synthesizeWithCancellation(
+    String text, {
+    required Duration targetDuration,
+    required CancellationToken cancellationToken,
+  }) async {
     final cleanText = text.trim();
     if (cleanText.isEmpty) return Uint8List(0);
 
     final cached = _cache.get(cleanText);
     if (cached != null) return Uint8List.fromList(cached);
 
+    cancellationToken.throwIfCancelled();
     await _ensureInitialized();
+    cancellationToken.throwIfCancelled();
+
     final session = _session;
     if (session == null) {
       final mockAudio = _generateMockAudio(targetDuration);

@@ -3,14 +3,12 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
     project.layout.buildDirectory.value(newBuildDir.dir(project.name))
-}
 
-subprojects {
     afterEvaluate {
         if (project.hasProperty("android")) {
             val android = project.extensions.findByName("android")
             if (android is com.android.build.gradle.BaseExtension) {
-                android.compileSdkVersion(36)
+                android.compileSdkVersion(35)
                 android.compileOptions {
                     sourceCompatibility = JavaVersion.VERSION_17
                     targetCompatibility = JavaVersion.VERSION_17

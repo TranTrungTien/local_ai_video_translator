@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -20,13 +22,15 @@ class _ModelManagerPageState extends ConsumerState<ModelManagerPage> {
   @override
   void initState() {
     super.initState();
-    _progressSub =
-        ref.read(modelManagerRepositoryProvider).progressStream.listen((progress) {
-      if (!mounted) return;
-      setState(() {
-        _progressMap[progress.modelId] = progress;
-      });
-    });
+    _progressSub = ref
+        .read(modelManagerRepositoryProvider)
+        .progressStream
+        .listen((progress) {
+          if (!mounted) return;
+          setState(() {
+            _progressMap[progress.modelId] = progress;
+          });
+        });
   }
 
   @override
@@ -48,18 +52,16 @@ class _ModelManagerPageState extends ConsumerState<ModelManagerPage> {
         elevation: 0,
       ),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: AppColors.backgroundGradient,
-        ),
+        decoration: const BoxDecoration(gradient: AppColors.backgroundGradient),
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            // Storage Summary
+            // Storage Summary Card
             AppGlassCard(
               padding: const EdgeInsets.all(20),
-              child: Column(
+              child: const Column(
                 children: [
-                  const Row(
+                  Row(
                     children: [
                       Icon(Icons.storage_rounded, color: AppColors.cyanAccent),
                       SizedBox(width: 12),
@@ -73,23 +75,29 @@ class _ModelManagerPageState extends ConsumerState<ModelManagerPage> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  const LinearProgressIndicator(
-                    value: 0.15, // Example
+                  SizedBox(height: 16),
+                  LinearProgressIndicator(
+                    value: 0.15,
                     backgroundColor: AppColors.surfaceCardBorder,
                     color: AppColors.cyanAccent,
                   ),
-                  const SizedBox(height: 8),
-                  const Row(
+                  SizedBox(height: 8),
+                  Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
                         'Đã sử dụng: 1.2 GB',
-                        style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
                       ),
                       Text(
                         'Trống: 124 GB',
-                        style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
                       ),
                     ],
                   ),
@@ -153,62 +161,6 @@ class _ModelCard extends StatelessWidget {
     final isFailed = progress?.state == ModelDownloadState.failed;
     final isReady = progress?.state == ModelDownloadState.ready;
 
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(_typeIcon(manifest.type), color: const Color(0xFF7C5CFC)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        manifest.id,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
-                      ),
-                      Text(
-                        '${manifest.type.name.toUpperCase()} • v${manifest.version} • ${sizeMb}MB',
-                        style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                _ModelDownloadButton(
-                  manifest: manifest,
-                  isDownloading: isDownloading,
-                  repo: repo,
-                ),
-              ],
-            ),
-            if (isDownloading && progress != null) ...[
-              const SizedBox(height: 12),
-              LinearProgressIndicator(value: progress!.progress),
-              const SizedBox(height: 4),
-              Text(
-                'Downloading ${(progress!.downloadedBytes / (1024 * 1024)).toStringAsFixed(1)} / $sizeMb MB',
-                style: const TextStyle(fontSize: 11, color: Colors.white60),
-              ),
-            ],
-            if (progress?.state == ModelDownloadState.failed) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Download failed: ${progress?.errorMessage}',
-                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-              ),
-            ],
-          ],
     return AppGlassCard(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -273,15 +225,15 @@ class _ModelCard extends StatelessWidget {
                         Icons.check_circle_rounded,
                         color: AppColors.success,
                       ),
-                      onPressed: () {
-                        // Show delete confirmation
-                        _showDeleteDialog(context);
-                      },
+                      onPressed: () => _showDeleteDialog(context),
                     );
                   }
 
                   return IconButton(
-                    icon: const Icon(Icons.download_rounded, color: AppColors.primaryLight),
+                    icon: const Icon(
+                      Icons.download_rounded,
+                      color: AppColors.primaryLight,
+                    ),
                     onPressed: () => repo.downloadModel(manifest),
                   );
                 },
@@ -296,7 +248,9 @@ class _ModelCard extends StatelessWidget {
                 value: progress!.progress,
                 minHeight: 6,
                 backgroundColor: AppColors.surfaceCardBorder,
-                valueColor: const AlwaysStoppedAnimation(AppColors.primaryLight),
+                valueColor: const AlwaysStoppedAnimation(
+                  AppColors.primaryLight,
+                ),
               ),
             ),
             const SizedBox(height: 4),
@@ -305,11 +259,17 @@ class _ModelCard extends StatelessWidget {
               children: [
                 Text(
                   'Đang tải... ${(progress!.progress * 100).toInt()}%',
-                  style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
                 ),
                 Text(
                   '${(progress!.downloadedBytes / (1024 * 1024)).toStringAsFixed(1)} / $sizeMb MB',
-                  style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textMuted,
+                  ),
                 ),
               ],
             ),
@@ -335,7 +295,10 @@ class _ModelCard extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.surfaceCard,
-        title: const Text('Xóa Model?', style: TextStyle(color: AppColors.textPrimary)),
+        title: const Text(
+          'Xóa Model?',
+          style: TextStyle(color: AppColors.textPrimary),
+        ),
         content: Text(
           'Bạn có chắc chắn muốn xóa model ${manifest.id}? Bạn sẽ cần tải lại để sử dụng tính năng này.',
           style: const TextStyle(color: AppColors.textSecondary),
@@ -371,81 +334,4 @@ class _ModelCard extends StatelessWidget {
     AiModelType.tts => Icons.record_voice_over_rounded,
     AiModelType.vad => Icons.graphic_eq_rounded,
   };
-}
-
-class _ModelDownloadButton extends StatefulWidget {
-  const _ModelDownloadButton({
-    required this.manifest,
-    required this.isDownloading,
-    required this.repo,
-  });
-
-  final AiModelManifest manifest;
-  final bool isDownloading;
-  final ModelManagerRepository repo;
-
-  @override
-  State<_ModelDownloadButton> createState() => _ModelDownloadButtonState();
-}
-
-class _ModelDownloadButtonState extends State<_ModelDownloadButton> {
-  late Future<bool> _isDownloadedFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _isDownloadedFuture = widget.repo.isModelDownloaded(widget.manifest.id);
-  }
-
-  @override
-  void didUpdateWidget(covariant _ModelDownloadButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.manifest.id != widget.manifest.id) {
-      _isDownloadedFuture = widget.repo.isModelDownloaded(widget.manifest.id);
-    }
-  }
-
-  void _refresh() {
-    setState(() {
-      _isDownloadedFuture = widget.repo.isModelDownloaded(widget.manifest.id);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: _isDownloadedFuture,
-      builder: (context, snapshot) {
-        final isDownloaded = snapshot.data ?? false;
-        if (widget.isDownloading) {
-          return const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          );
-        }
-        if (isDownloaded) {
-          return IconButton(
-            icon: const Icon(
-              Icons.delete_outline,
-              color: Colors.redAccent,
-            ),
-            onPressed: () async {
-              await widget.repo.deleteModel(widget.manifest.id);
-              _refresh();
-            },
-            tooltip: 'Delete downloaded model',
-          );
-        }
-        return FilledButton.icon(
-          onPressed: () async {
-            await widget.repo.downloadModel(widget.manifest);
-            _refresh();
-          },
-          icon: const Icon(Icons.download, size: 16),
-          label: const Text('Download'),
-        );
-      },
-    );
-  }
 }

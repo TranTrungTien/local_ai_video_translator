@@ -7,12 +7,30 @@ class OperationCancelledException implements Exception {
 }
 
 class CancellationToken {
-  bool _isCancelled = bool.fromEnvironment('false');
+  bool _isCancelled = false;
+  final List<VoidCallback> _listeners = [];
 
   bool get isCancelled => _isCancelled;
 
+  void addListener(VoidCallback listener) {
+    if (_isCancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  void removeListener(VoidCallback listener) {
+    _listeners.remove(listener);
+  }
+
   void cancel() {
+    if (_isCancelled) return;
     _isCancelled = true;
+    for (final listener in _listeners) {
+      listener();
+    }
+    _listeners.clear();
   }
 
   void throwIfCancelled() {
@@ -21,3 +39,5 @@ class CancellationToken {
     }
   }
 }
+
+typedef VoidCallback = void Function();

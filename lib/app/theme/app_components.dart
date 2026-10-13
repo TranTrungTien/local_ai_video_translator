@@ -92,7 +92,7 @@ class GlowButton extends StatelessWidget {
                   color: (color ?? AppColors.primary).withValues(alpha: 0.35),
                   blurRadius: 16,
                   offset: const Offset(0, 4),
-                )
+                ),
               ]
             : null,
       ),
@@ -171,11 +171,7 @@ class PillBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (icon != null) ...[
-            Icon(
-              icon,
-              size: 14,
-              color: textColor ?? AppColors.textPrimary,
-            ),
+            Icon(icon, size: 14, color: textColor ?? AppColors.textPrimary),
             const SizedBox(width: 6),
           ],
           Text(
@@ -191,10 +187,7 @@ class PillBadge extends StatelessWidget {
     );
 
     if (onTap != null) {
-      return GestureDetector(
-        onTap: onTap,
-        child: badge,
-      );
+      return GestureDetector(onTap: onTap, child: badge);
     }
     return badge;
   }
@@ -295,11 +288,7 @@ class _GaugePainter extends CustomPainter {
     // Progress Paint with Gradient
     final rect = Rect.fromCircle(center: center, radius: radius);
     final gradient = const SweepGradient(
-      colors: [
-        AppColors.primary,
-        AppColors.primaryLight,
-        AppColors.cyanAccent,
-      ],
+      colors: [AppColors.primary, AppColors.primaryLight, AppColors.cyanAccent],
       startAngle: -math.pi * 0.75,
       endAngle: math.pi * 0.75,
     );
@@ -312,13 +301,7 @@ class _GaugePainter extends CustomPainter {
 
     final sweepAngle = math.pi * 1.5 * progress.clamp(0.0, 1.0);
 
-    canvas.drawArc(
-      rect,
-      -math.pi * 0.75,
-      sweepAngle,
-      false,
-      progressPaint,
-    );
+    canvas.drawArc(rect, -math.pi * 0.75, sweepAngle, false, progressPaint);
   }
 
   @override
@@ -452,7 +435,7 @@ class StepTimelineTile extends StatelessWidget {
                       ],
                     ),
                   ),
-                  if (trailing != null) trailing!,
+                  ?trailing,
                 ],
               ),
             ),

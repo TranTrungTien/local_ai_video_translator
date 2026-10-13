@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/dio_provider.dart';
+import '../../../core/utils/cancellation_token.dart';
 import '../data/html_media_parser.dart';
 import '../data/source_resolver_repository_impl.dart';
 import '../domain/entities/resolved_source.dart';
@@ -27,21 +29,49 @@ final sourceResolverControllerProvider =
 
 class SourceResolverController extends AsyncNotifier<ResolvedSource?> {
   @override
-  Future<ResolvedSource?> build() async => null;
+  Future<ResolvedSource?> build() async {
+    ref.onDispose(() {
+      _activeDioCancelToken?.cancel('Controller disposed');
+    });
+    return null;
+  }
 
   String? _manualSubtitlePath;
+  int _requestGeneration = 0;
+  CancelToken? _activeDioCancelToken;
+  CancellationToken? _activeDomainToken;
 
   Future<ResolvedSource?> resolve(String input) async {
-    state = const AsyncLoading();
-    final result = await AsyncValue.guard(
-      () => ref.read(resolveSourceProvider)(input),
-    );
+    final generation = ++_requestGeneration;
+    _activeDioCancelToken?.cancel('New resolution started');
+    _activeDioCancelToken = CancelToken();
+    _activeDomainToken?.cancel();
+    _activeDomainToken = CancellationToken();
 
-    if (result.hasValue && result.value != null && _manualSubtitlePath != null) {
-      state = AsyncData(result.value!.copyWith(manualSubtitlePath: _manualSubtitlePath));
-    } else {
-      state = result;
+    state = const AsyncLoading();
+
+    try {
+      final result = await ref.read(resolveSourceProvider)(
+        input,
+        cancellationToken: _activeDomainToken,
+      );
+
+      if (generation != _requestGeneration) {
+        return state.value;
+      }
+
+      if (result != null && _manualSubtitlePath != null) {
+        state = AsyncData(result.copyWith(manualSubtitlePath: _manualSubtitlePath));
+      } else {
+        state = AsyncData(result);
+      }
+    } catch (e, st) {
+      if (generation != _requestGeneration) {
+        return state.value;
+      }
+      state = AsyncError(e, st);
     }
+
     return state.value;
   }
 

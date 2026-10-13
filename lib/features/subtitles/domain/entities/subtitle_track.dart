@@ -1,4 +1,4 @@
-import '../../source_resolver/domain/entities/resolved_source.dart';
+import '../../../source_resolver/domain/entities/resolved_source.dart';
 
 enum SubtitleFormat { webvtt, srt, hlsSegment }
 

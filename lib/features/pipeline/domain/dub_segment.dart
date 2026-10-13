@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 class DubSegment {
   const DubSegment({
     required this.id,

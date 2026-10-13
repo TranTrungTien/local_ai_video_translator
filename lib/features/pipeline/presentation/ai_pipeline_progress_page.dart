@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
+import '../../source_resolver/domain/entities/resolved_source.dart';
 import '../data/performance_monitor.dart';
 import 'ai_scheduler_controller.dart';
 
@@ -20,18 +21,12 @@ class AiPipelineProgressPage extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<AiPipelineProgressPage> createState() => _AiPipelineProgressPageState();
+  ConsumerState<AiPipelineProgressPage> createState() =>
+      _AiPipelineProgressPageState();
 }
 
-class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage> {
-  late double _progress;
-
-  @override
-  void initState() {
-    super.initState();
-    _progress = widget.initialProgress;
-  }
-
+class _AiPipelineProgressPageState
+    extends ConsumerState<AiPipelineProgressPage> {
   @override
   Widget build(BuildContext context) {
     final aiSchedulerController = ref.watch(aiSchedulerProvider.notifier);
@@ -49,7 +44,9 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
         ],
       ),
       body: SafeArea(
-        child: activeSource == null ? _buildEmptyState() : _buildActivePipelineView(activeSource, aiState),
+        child: activeSource == null
+            ? _buildEmptyState()
+            : _buildActivePipelineView(activeSource, aiState),
       ),
     );
   }
@@ -112,8 +109,6 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
           ),
         ),
         const SizedBox(height: 28),
-
-        // History Section in Empty State
         const Text(
           'Các tác vụ đã hoàn thành gần đây',
           style: TextStyle(
@@ -123,7 +118,6 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
           ),
         ),
         const SizedBox(height: 12),
-
         _buildHistoryCard(
           title: 'Hướng dẫn AI Video Translation bằng Whisper',
           source: 'YouTube • 12:45',
@@ -141,84 +135,19 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
     );
   }
 
-  Widget _buildActivePipelineView(ResolvedSource activeSource, AiSchedulerState aiState) {
-    final subtitleProgress = aiState.subtitleReadyUntil.inMilliseconds /
-        (activeSource.capability.duration?.inMilliseconds ?? 1.0);
-    final dubProgress = aiState.dubReadyUntil.inMilliseconds /
-        (activeSource.capability.duration?.inMilliseconds ?? 1.0);
-    final overallProgress = (subtitleProgress + dubProgress) / 2.0;
-
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        // Video Title & Subtitle Badge
-        AppGlassCard(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: const BoxDecoration(
-                  color: AppColors.primaryGlow,
-                  borderRadius: BorderRadius.all(Radius.circular(12)),
-                ),
-                child: const Icon(
-                  Icons.movie_filter_rounded,
-                  color: AppColors.primaryLight,
-                  size: 24,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      activeSource.input,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        const Text(
-                          'Tiếng Anh -> Tiếng Việt',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textMuted,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        PillBadge(
-                          label: aiState.activeSourceStrategy,
-                          backgroundColor: AppColors.surface,
-                          textColor: AppColors.primaryLight,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 28),
-  Widget _buildActivePipelineView(dynamic activeSource, AiSchedulerState aiState) {
+  Widget _buildActivePipelineView(
+    ResolvedSource activeSource,
+    AiSchedulerState aiState,
+  ) {
     return StreamBuilder<PerformanceMetrics>(
       stream: PerformanceMonitor.instance.metricsStream,
       builder: (context, perfSnapshot) {
-        final metrics = perfSnapshot.data ?? PerformanceMonitor.instance.current;
+        final metrics =
+            perfSnapshot.data ?? PerformanceMonitor.instance.current;
 
         return ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            // Video Title & Subtitle Badge
             AppGlassCard(
               padding: const EdgeInsets.all(16),
               child: Row(
@@ -242,7 +171,9 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          activeSource.input.isNotEmpty ? activeSource.input : widget.title,
+                          activeSource.input.isNotEmpty
+                              ? activeSource.input
+                              : widget.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -276,29 +207,15 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
               ),
             ),
             const SizedBox(height: 28),
-
-            // Circular Progress Gauge Center
             Center(
               child: ProgressGauge(
-                progress: _progress,
+                progress: widget.initialProgress,
                 title: 'Đang dịch AI',
                 subtitle: 'Thực tế: ${metrics.sttRtf.toStringAsFixed(2)}x RTF',
                 size: 200,
               ),
             ),
             const SizedBox(height: 28),
-        // Circular Progress Gauge Center
-        Center(
-          child: ProgressGauge(
-            progress: overallProgress,
-            title: 'Tiến độ Tổng thể',
-            subtitle: 'Phụ đề: ${(subtitleProgress * 100).toInt()}% | Lồng tiếng: ${(dubProgress * 100).toInt()}%',
-            size: 200,
-          ),
-        ),
-        const SizedBox(height: 28),
-
-            // Metrics Row
             Row(
               children: [
                 Expanded(
@@ -314,7 +231,8 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
                   child: _buildMetricTile(
                     icon: Icons.translate_rounded,
                     label: 'Translate',
-                    value: '${metrics.translationThroughputCharsPerSec.toInt()} ch/s',
+                    value:
+                        '${metrics.translationThroughputCharsPerSec.toInt()} ch/s',
                     color: AppColors.primaryLight,
                   ),
                 ),
@@ -330,8 +248,6 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
               ],
             ),
             const SizedBox(height: 24),
-
-            // Checklist Pipeline Steps Header
             const Text(
               'Danh sách Nhiệm vụ AI Pipeline',
               style: TextStyle(
@@ -341,8 +257,6 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
               ),
             ),
             const SizedBox(height: 12),
-
-            // Steps Checklist Card
             AppGlassCard(
               padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
               child: const Column(
@@ -354,7 +268,8 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
                   ),
                   StepTimelineTile(
                     title: 'Speech-to-Text (Whisper AI Engine)',
-                    subtitle: 'Đang nhận dạng giọng nói & tạo mốc thời gian (PTS)',
+                    subtitle:
+                        'Đang nhận dạng giọng nói & tạo mốc thời gian (PTS)',
                     stepState: AppStepState.active,
                   ),
                   StepTimelineTile(
@@ -372,8 +287,6 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
               ),
             ),
             const SizedBox(height: 24),
-
-            // Action Buttons
             Row(
               children: [
                 Expanded(
@@ -384,13 +297,20 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      side: const BorderSide(color: AppColors.surfaceCardBorder),
+                      side: const BorderSide(
+                        color: AppColors.surfaceCardBorder,
+                      ),
                     ),
-                    icon: const Icon(Icons.pause_circle_outline_rounded, size: 20),
+                    icon: const Icon(
+                      Icons.pause_circle_outline_rounded,
+                      size: 20,
+                    ),
                     label: const Text('Tạm dừng'),
                     onPressed: () {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Đã tạm dừng tiến trình AI')),
+                        const SnackBar(
+                          content: Text('Đã tạm dừng tiến trình AI'),
+                        ),
                       );
                     },
                   ),
@@ -401,9 +321,7 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
                     label: 'Mở Trình phát',
                     icon: Icons.play_arrow_rounded,
                     onPressed: () {
-                      if (activeSource != null) {
-                        context.push('/player', extra: activeSource);
-                      }
+                      context.push('/player', extra: activeSource);
                     },
                   ),
                 ),
@@ -412,7 +330,7 @@ class _AiPipelineProgressPageState extends ConsumerState<AiPipelineProgressPage>
             const SizedBox(height: 20),
           ],
         );
-      }
+      },
     );
   }
 
