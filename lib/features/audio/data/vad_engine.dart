@@ -146,7 +146,7 @@ class LocalVadEngine implements VoiceActivityDetector {
         );
 
         if (onProgress != null) {
-          onProgress?.call(currentPts + windowDuration, active?.start);
+          onProgress.call(currentPts + windowDuration, active?.start);
         }
 
         final isSpeech = await _isSpeechData(

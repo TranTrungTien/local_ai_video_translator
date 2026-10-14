@@ -19,6 +19,25 @@ class DubbingController extends StateNotifier<bool> {
   StreamSubscription? _activeIdSub;
 
   void _init() {
+    // Cấu hình AudioContext để lồng tiếng (TTS) tự động duck (giảm âm lượng) video nền
+    // thay vì chiếm quyền ưu tiên hoàn toàn hoặc tạm dừng media chính.
+    _audioPlayer.setAudioContext(
+      AudioContext(
+        android: AudioContextAndroid(
+          contentType: AndroidContentType.speech,
+          usageType: AndroidUsageType.assistanceSonification,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+          options: {
+            AVAudioSessionOptions.duckOthers,
+            AVAudioSessionOptions.interruptSpokenAudioAndMixWithOthers,
+          },
+        ),
+      ),
+    );
+
     _activeIdSub = _repository.activeIdStream.listen((id) async {
       if (!state) return;
 

@@ -49,7 +49,6 @@ class MediaSessionController extends Notifier<MediaSessionSnapshot> {
   // Sử dụng getter để truy cập các provider ổn định, tránh rủi ro late init trong suốt vòng đời của phương thức build()
   NativeMediaSession get _session => ref.read(nativeMediaSessionProvider);
   NativeMigrationController get _migration => ref.read(migrationControllerProvider);
-  DubbingPlayerService get _dubbingPlayer => ref.read(dubbingPlayerServiceProvider);
 
   @override
   MediaSessionSnapshot build() {

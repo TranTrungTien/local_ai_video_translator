@@ -221,7 +221,13 @@ class SubtitleRepositoryImpl
       if (track.uri.isScheme('file')) {
         body = await File(track.uri.toFilePath()).readAsString();
       } else {
-        final response = await _dio.get<String>(track.uri.toString());
+        final response = await _dio.get<String>(
+          track.uri.toString(),
+          options: Options(
+            responseType: ResponseType.plain,
+            headers: track.requestContext?.headers,
+          ),
+        );
         body = response.data ?? '';
       }
 
@@ -276,3 +282,4 @@ class SubtitleRepositoryImpl
     return const [];
   }
 }
+

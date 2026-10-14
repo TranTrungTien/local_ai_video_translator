@@ -4,6 +4,7 @@ import 'migration_state.dart';
 import 'player_state.dart';
 
 class MediaSessionSnapshot {
+  static const Object _notProvided = Object();
   const MediaSessionSnapshot({
     required this.mediaIdentity,
     required this.duration,
@@ -55,10 +56,10 @@ class MediaSessionSnapshot {
     double? volume,
     VideoTrack? activeVideoTrack,
     AudioTrack? activeAudioTrack,
-    PlayerSubtitleTrack? activeSubtitleTrack,
+    Object? activeSubtitleTrack = _notProvided,
     MediaTrackSet? trackSet,
     RequestContext? requestContext,
-    PlayerError? error,
+    Object? error = _notProvided,
     MigrationStatus? migrationStatus,
   }) {
     return MediaSessionSnapshot(
@@ -71,10 +72,12 @@ class MediaSessionSnapshot {
       volume: volume ?? this.volume,
       activeVideoTrack: activeVideoTrack ?? this.activeVideoTrack,
       activeAudioTrack: activeAudioTrack ?? this.activeAudioTrack,
-      activeSubtitleTrack: activeSubtitleTrack ?? this.activeSubtitleTrack,
+      activeSubtitleTrack: identical(activeSubtitleTrack, _notProvided)
+          ? this.activeSubtitleTrack
+          : activeSubtitleTrack as PlayerSubtitleTrack?,
       trackSet: trackSet ?? this.trackSet,
       requestContext: requestContext ?? this.requestContext,
-      error: error ?? this.error,
+      error: identical(error, _notProvided) ? this.error : error as PlayerError?,
       migrationStatus: migrationStatus ?? this.migrationStatus,
     );
   }
@@ -89,3 +92,4 @@ class MediaSessionSnapshot {
     volume: 100.0,
   );
 }
+

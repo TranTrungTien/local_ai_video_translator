@@ -1,4 +1,3 @@
-import '../../../source_resolver/domain/entities/resolved_source.dart';
 
 class EmbeddedPlaybackSnapshot {
   const EmbeddedPlaybackSnapshot({

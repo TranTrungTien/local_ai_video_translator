@@ -179,16 +179,18 @@ class LocalTranslationEngine implements TranslationEngine {
       await inputOrt.dispose();
       await outputVal?.dispose();
 
-      // 4. Decode Outputs
+    // 4. Decode Outputs
       if (outputTensor != null && outputTensor.isNotEmpty) {
         final tokens = outputTensor[0].map((e) => (e as num).toInt()).toList();
         return _tokenizer?.decode(tokens) ?? String.fromCharCodes(tokens);
       }
+
+      throw ModelContractException('Opus-MT: output_ids tensor is empty or null');
     } catch (e, st) {
       _diagnostics.log('TRANSLATION_ENGINE', 'Inference error: $e', level: LogLevel.error, details: st);
+      if (e is ModelContractException) rethrow;
+      throw ModelContractException('Opus-MT inference failed: $e');
     }
-
-    return _mockTranslate(clean);
   }
 
   String _mockTranslate(String text) {

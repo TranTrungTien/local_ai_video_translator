@@ -316,7 +316,10 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       audioStream,
       onProgress: (pts, activeSpeechStart) {
         if (_isStale(gen)) return;
-        _timelineBuffer.reportProgress(pts, activeSpeechStart: activeSpeechStart);
+        _timelineBuffer.reportProgress(
+          pts,
+          activeSpeechStart: activeSpeechStart,
+        );
         _updateBufferState();
       },
     )) {
@@ -328,7 +331,10 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
         final firstChunk = speech.chunks.first;
         if (firstChunk.playbackSessionId != activeSessionId ||
             firstChunk.seekGeneration != gen) {
-          _diagnostics.log('AIScheduler', 'Discarding stale VAD segment from old session');
+          _diagnostics.log(
+            'AIScheduler',
+            'Discarding stale VAD segment from old session',
+          );
           continue;
         }
       }
@@ -482,24 +488,34 @@ final subtitleRepositoryProvider = Provider<SubtitleRepository>((ref) {
 });
 
 final sttEngineProvider = Provider<SpeechToTextEngine>((ref) {
-  return LocalSpeechToTextEngine(
+  final engine = LocalSpeechToTextEngine(
     ref.watch(modelManagerRepositoryProvider),
     ref.watch(diagnosticsServiceProvider),
   );
+
+  ref.onDispose(() {
+    unawaited(engine.dispose());
+  });
+
+  return engine;
 });
 
 final translationEngineProvider = Provider<TranslationEngine>((ref) {
-  return LocalTranslationEngine(
+  final engine = LocalTranslationEngine(
     ref.watch(modelManagerRepositoryProvider),
     ref.watch(diagnosticsServiceProvider),
   );
+  ref.onDispose(engine.dispose);
+  return engine;
 });
 
 final ttsEngineProvider = Provider<TextToSpeechEngine>((ref) {
-  return LocalTextToSpeechEngine(
+  final engine = LocalTextToSpeechEngine(
     ref.watch(modelManagerRepositoryProvider),
     ref.watch(diagnosticsServiceProvider),
   );
+  ref.onDispose(engine.dispose);
+  return engine;
 });
 
 final pcmAudioExtractorProvider = Provider<PcmAudioExtractor>((ref) {
@@ -510,10 +526,12 @@ final pcmAudioExtractorProvider = Provider<PcmAudioExtractor>((ref) {
 });
 
 final vadEngineProvider = Provider<VoiceActivityDetector>((ref) {
-  return LocalVadEngine(
+  final engine = LocalVadEngine(
     ref.watch(modelManagerRepositoryProvider),
     ref.watch(diagnosticsServiceProvider),
   );
+  ref.onDispose(engine.dispose);
+  return engine;
 });
 
 final dubbingRepositoryProvider = Provider<DubbingRepository>((ref) {
@@ -540,3 +558,4 @@ final aiSchedulerProvider =
         diagnostics: ref.watch(diagnosticsServiceProvider),
       );
     });
+

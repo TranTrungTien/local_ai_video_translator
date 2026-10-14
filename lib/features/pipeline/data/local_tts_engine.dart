@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -25,6 +26,7 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   static const String modelId = 'tts_piper_vi_female';
 
   OrtSession? _session;
+  Map<String, List<int>>? _phonemeIdMap;
   TtsCache get cache => _cache;
 
   @override
@@ -36,8 +38,26 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
     if (Platform.environment.containsKey('FLUTTER_TEST')) return;
 
     final modelFile = await _modelRepository.getModelFile(modelId, 'vi_VN-25hours_single-low.onnx');
-    if (!await modelFile.exists()) {
-      throw Exception('Piper TTS model not found. Please download it in settings.');
+    final configFile = await _modelRepository.getModelFile(modelId, 'vi_VN-25hours_single-low.onnx.json');
+
+    if (!await modelFile.exists() || !await configFile.exists()) {
+      throw Exception('Piper TTS model or config not found. Please download it in settings.');
+    }
+
+    try {
+      final configContent = await configFile.readAsString();
+      final config = jsonDecode(configContent) as Map<String, dynamic>;
+      final rawMap = config['phoneme_id_map'] as Map<String, dynamic>?;
+      if (rawMap != null) {
+        _phonemeIdMap = rawMap.map((key, value) {
+          if (value is List) {
+            return MapEntry(key, List<int>.from(value.map((e) => e as int)));
+          }
+          return MapEntry(key, [value as int]);
+        });
+      }
+    } catch (e) {
+      _diagnostics.log('TTS_ENGINE', 'Failed to load phoneme map: $e', level: LogLevel.warning);
     }
 
     final sessionOptions = OrtSessionOptions();
@@ -153,10 +173,23 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   }
 
   List<int> _textToPhonemeIds(String text) {
-    // Piper uses specific phoneme IDs based on the model's config.
-    // For the Vietnamese 'vi_VN-25hour-single-low' model, it expects IPA phonemes mapped to IDs.
-    // We implement a basic rule-based G2P for common Vietnamese digraphs and tones.
+    // 1. Nếu đã load được map từ config.json của model, ưu tiên dùng nó
+    final map = _phonemeIdMap;
+    if (map != null) {
+      final List<int> ids = [0]; // BOS
+      final normalized = text.toLowerCase().trim();
+      for (var i = 0; i < normalized.length; i++) {
+        final char = normalized[i];
+        final phonemes = map[char] ?? map[' '] ?? [3]; // Fallback to space or unk
+        ids.addAll(phonemes);
+        ids.add(1); // Separator
+      }
+      if (ids.last == 1) ids.removeLast();
+      ids.add(2); // EOS
+      return ids;
+    }
 
+    // 2. Fallback sang rule-based G2P simulation nếu không có config
     final List<int> ids = [0]; // BOS
 
     final normalizedText = text.toLowerCase().trim();
