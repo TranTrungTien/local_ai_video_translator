@@ -24,10 +24,13 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   final TtsCache _cache;
 
   static const String modelId = 'tts_piper_vi_female';
+  static const String modelFileName = 'vi_VN-25hours_single-low.onnx';
 
   OrtSession? _session;
   Map<String, List<int>>? _phonemeIdMap;
   TtsCache get cache => _cache;
+
+  Completer<void>? _processingLock;
 
   @override
   bool get installed => true;
@@ -37,27 +40,31 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
 
     if (Platform.environment.containsKey('FLUTTER_TEST')) return;
 
-    final modelFile = await _modelRepository.getModelFile(modelId, 'vi_VN-25hours_single-low.onnx');
-    final configFile = await _modelRepository.getModelFile(modelId, 'vi_VN-25hours_single-low.onnx.json');
-
-    if (!await modelFile.exists() || !await configFile.exists()) {
-      throw Exception('Piper TTS model or config not found. Please download it in settings.');
+    final modelFile = await _modelRepository.getModelFile(modelId, modelFileName);
+    if (!await modelFile.exists()) {
+      throw ModelDownloadException('Piper TTS model missing. Please download it in settings.');
     }
 
-    try {
-      final configContent = await configFile.readAsString();
-      final config = jsonDecode(configContent) as Map<String, dynamic>;
-      final rawMap = config['phoneme_id_map'] as Map<String, dynamic>?;
-      if (rawMap != null) {
-        _phonemeIdMap = rawMap.map((key, value) {
-          if (value is List) {
-            return MapEntry(key, List<int>.from(value.map((e) => e as int)));
-          }
-          return MapEntry(key, [value as int]);
-        });
+    // Try to load accompanying config if exists
+    final dir = await _modelRepository.getModelDir(modelId);
+    final configFile = File('${dir.path}/$modelFileName.json');
+
+    if (await configFile.exists()) {
+      try {
+        final configContent = await configFile.readAsString();
+        final config = jsonDecode(configContent) as Map<String, dynamic>;
+        final rawMap = config['phoneme_id_map'] as Map<String, dynamic>?;
+        if (rawMap != null) {
+          _phonemeIdMap = rawMap.map((key, value) {
+            if (value is List) {
+              return MapEntry(key, List<int>.from(value.map((e) => e as int)));
+            }
+            return MapEntry(key, [value as int]);
+          });
+        }
+      } catch (e) {
+        _diagnostics.log('TTS_ENGINE', 'Failed to load phoneme map: $e', level: LogLevel.warning);
       }
-    } catch (e) {
-      _diagnostics.log('TTS_ENGINE', 'Failed to load phoneme map: $e', level: LogLevel.warning);
     }
 
     final sessionOptions = OrtSessionOptions();
@@ -93,94 +100,109 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
     if (cached != null) return Uint8List.fromList(cached);
 
     cancellationToken.throwIfCancelled();
-    await _ensureInitialized();
-    cancellationToken.throwIfCancelled();
 
-    final session = _session;
-    if (session == null) {
-      final mockAudio = _generateMockAudio(targetDuration);
-      _cache.put(cleanText, mockAudio);
-      return mockAudio;
+    while (_processingLock != null) {
+      await _processingLock!.future;
     }
+    _processingLock = Completer<void>();
 
-    final stopwatch = Stopwatch()..start();
     try {
-      // 1. Phonemization/Tokenization
-      final phonemeIds = _textToPhonemeIds(cleanText);
+      await _ensureInitialized();
+      cancellationToken.throwIfCancelled();
 
-      // 2. Calculate Length Scale to match targetDuration
-      // Piper baseline: ~13.5 phonemes per second at length_scale 1.0 for the Vietnamese model.
-      // We aim to fit the generated audio within targetDuration.
-      const baselinePhonemesPerSecond = 13.5;
-      final estimatedNaturalDurationMs = (phonemeIds.length / baselinePhonemesPerSecond) * 1000;
+      final session = _session;
+      if (session == null) {
+        final mockAudio = _generateMockAudio(targetDuration);
+        _cache.put(cleanText, mockAudio);
+        return mockAudio;
+      }
 
-      // Target length scale = (Natural Duration) / (Target Duration)
-      // If Target Duration is shorter, lengthScale > 1.0 (faster speech)
-      // If Target Duration is longer, lengthScale < 1.0 (slower speech)
-      // Piper's length_scale: higher values = slower speech.
-      // So lengthScale = targetDuration / naturalDuration.
-      double lengthScale = targetDuration.inMilliseconds / estimatedNaturalDurationMs;
+      final stopwatch = Stopwatch()..start();
+      OrtValue? inputOrt;
+      OrtValue? inputLengthsOrt;
+      OrtValue? scalesOrt;
+      Map<String, OrtValue>? outputs;
 
-      // Clamp between 0.6 (fast) and 2.5 (slow) to keep it intelligible.
-      // Most Piper models start sounding bad outside this range.
-      lengthScale = lengthScale.clamp(0.6, 2.5);
+      try {
+        // 1. Phonemization/Tokenization
+        final phonemeIds = _textToPhonemeIds(cleanText);
 
-      final inputOrt = await OrtValue.fromList(
-        Int64List.fromList(phonemeIds),
-        [1, phonemeIds.length],
-      );
+        // 2. Calculate Length Scale to match targetDuration
+        const baselinePhonemesPerSecond = 13.5;
+        final estimatedNaturalDurationMs = (phonemeIds.length / baselinePhonemesPerSecond) * 1000;
+        double lengthScale = targetDuration.inMilliseconds / estimatedNaturalDurationMs;
+        lengthScale = lengthScale.clamp(0.6, 2.5);
 
-      final inputLengthsOrt = await OrtValue.fromList(Int64List.fromList([phonemeIds.length]), [1]);
-      final scalesOrt = await OrtValue.fromList(Float32List.fromList([0.667, lengthScale, 0.8]), [3]);
-
-      final inputs = {
-        'input': inputOrt,
-        'input_lengths': inputLengthsOrt,
-        'scales': scalesOrt,
-      };
-
-      final outputs = await session.run(inputs);
-
-      // 3. Process Output
-      final outputVal = outputs['output'];
-      final outputTensor = outputVal != null ? await outputVal.asList() as List<List<dynamic>>? : null;
-
-      await inputOrt.dispose();
-      await inputLengthsOrt.dispose();
-      await scalesOrt.dispose();
-      await outputVal?.dispose();
-      if (outputTensor != null && outputTensor.isNotEmpty) {
-        final floatAudio = Float32List.fromList(
-          List<double>.from(outputTensor[0].map((e) => (e as num).toDouble())),
+        inputOrt = await OrtValue.fromList(
+          Int64List.fromList(phonemeIds),
+          [1, phonemeIds.length],
         );
-        final pcm16 = _float32ToPcm16(floatAudio);
 
-        stopwatch.stop();
-        final audioDurationSec = pcm16.length / (16000 * 2);
-        if (audioDurationSec > 0) {
-          final rtf = stopwatch.elapsedMilliseconds / (audioDurationSec * 1000);
-          PerformanceMonitor.instance.updateTtsRtf(rtf);
+        inputLengthsOrt = await OrtValue.fromList(Int64List.fromList([phonemeIds.length]), [1]);
+        scalesOrt = await OrtValue.fromList(Float32List.fromList([0.667, lengthScale, 0.8]), [3]);
+
+        final inputs = {
+          'input': inputOrt,
+          'input_lengths': inputLengthsOrt,
+          'scales': scalesOrt,
+        };
+
+        outputs = await session.run(inputs);
+
+        // 3. Process Output
+        final outputVal = outputs['output'];
+        final outputTensor = outputVal != null ? await outputVal.asList() as List<dynamic>? : null;
+
+        if (outputTensor != null && outputTensor.isNotEmpty) {
+          final List<double> flatData = [];
+          if (outputTensor[0] is List) {
+             flatData.addAll((outputTensor[0] as List).map((e) => (e as num).toDouble()));
+          } else {
+             flatData.addAll(outputTensor.map((e) => (e as num).toDouble()));
+          }
+
+          final floatAudio = Float32List.fromList(flatData);
+          final pcm16 = _float32ToPcm16(floatAudio);
+
+          stopwatch.stop();
+          final audioDurationSec = pcm16.length / (16000 * 2);
+          if (audioDurationSec > 0) {
+            final rtf = stopwatch.elapsedMilliseconds / (audioDurationSec * 1000);
+            PerformanceMonitor.instance.updateTtsRtf(rtf);
+          }
+
+          _cache.put(cleanText, pcm16);
+          return pcm16;
         }
-
-        _cache.put(cleanText, pcm16);
-        return pcm16;
+      } finally {
+        await inputOrt?.dispose();
+        await inputLengthsOrt?.dispose();
+        await scalesOrt?.dispose();
+        if (outputs != null) {
+          for (var v in outputs.values) {
+            await v.dispose();
+          }
+        }
       }
     } catch (e, st) {
-      _diagnostics.log('TTS_ENGINE', 'Synthesis error: $e', level: LogLevel.error, details: st);
+      _diagnostics.log('TTS_ENGINE', 'Synthesis error: $e', level: LogLevel.error, details: st.toString());
+    } finally {
+      final lock = _processingLock;
+      _processingLock = null;
+      lock?.complete();
     }
 
     return _generateMockAudio(targetDuration);
   }
 
   List<int> _textToPhonemeIds(String text) {
-    // 1. Nếu đã load được map từ config.json của model, ưu tiên dùng nó
     final map = _phonemeIdMap;
     if (map != null) {
       final List<int> ids = [0]; // BOS
       final normalized = text.toLowerCase().trim();
       for (var i = 0; i < normalized.length; i++) {
         final char = normalized[i];
-        final phonemes = map[char] ?? map[' '] ?? [3]; // Fallback to space or unk
+        final phonemes = map[char] ?? map[' '] ?? [3];
         ids.addAll(phonemes);
         ids.add(1); // Separator
       }
@@ -189,19 +211,13 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
       return ids;
     }
 
-    // 2. Fallback sang rule-based G2P simulation nếu không có config
     final List<int> ids = [0]; // BOS
-
     final normalizedText = text.toLowerCase().trim();
-
-    // Simple Vietnamese G2P simulation.
-    // In a production app, we would use a proper phonemizer library or a precomputed map.
     int i = 0;
     while (i < normalizedText.length) {
       String match = normalizedText[i];
       int consume = 1;
 
-      // Check for digraphs/trigraphs common in Vietnamese
       if (i + 2 < normalizedText.length) {
         final tri = normalizedText.substring(i, i + 3);
         if (_vietnameseDigraphs.containsKey(tri)) {
@@ -218,11 +234,9 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
         }
       }
 
-      // Tra cứu ID: Ưu tiên digraphs/trigraphs trước, sau đó mới đến ký tự đơn
       final id = _vietnameseDigraphs[match] ?? _phonemeMap[match] ?? _phonemeMap[match[0]] ?? 3;
       ids.add(id);
-      ids.add(1); // Piper thường yêu cầu separator (ID 1) giữa các âm tiết
-
+      ids.add(1);
       i += consume;
     }
 
@@ -258,7 +272,6 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   Uint8List _float32ToPcm16(Float32List float32Data) {
     final pcm16Data = Int16List(float32Data.length);
     for (var i = 0; i < float32Data.length; i++) {
-      // Clamp and scale to 16-bit range
       final sample = (float32Data[i] * 32767.0).clamp(-32768.0, 32767.0);
       pcm16Data[i] = sample.toInt();
     }
@@ -273,7 +286,6 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
 
     final samplesNeeded = (sampleRate * targetMs) ~/ 1000;
     final bytes = Uint8List(samplesNeeded * 2 * channels);
-    // Fill with a low-level buzz instead of constant 100
     for (var i = 0; i < bytes.length; i++) {
       bytes[i] = (i % 2 == 0) ? 10 : 0;
     }

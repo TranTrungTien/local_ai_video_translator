@@ -209,7 +209,7 @@ class _AiPipelineProgressPageState
             const SizedBox(height: 28),
             Center(
               child: ProgressGauge(
-                progress: widget.initialProgress,
+                progress: aiState.overallProgress,
                 title: 'Đang dịch AI',
                 subtitle: 'Thực tế: ${metrics.sttRtf.toStringAsFixed(2)}x RTF',
                 size: 200,

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -57,52 +58,59 @@ class _ModelManagerPageState extends ConsumerState<ModelManagerPage> {
           padding: const EdgeInsets.all(20),
           children: [
             // Storage Summary Card
-            AppGlassCard(
-              padding: const EdgeInsets.all(20),
-              child: const Column(
-                children: [
-                  Row(
+            FutureBuilder<Directory?>(
+              future: repo.getModelDir(''),
+              builder: (context, snapshot) {
+                return AppGlassCard(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
                     children: [
-                      Icon(Icons.storage_rounded, color: AppColors.cyanAccent),
-                      SizedBox(width: 12),
-                      Text(
-                        'Bộ nhớ AI',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary,
-                        ),
+                      const Row(
+                        children: [
+                          Icon(Icons.storage_rounded, color: AppColors.cyanAccent),
+                          SizedBox(width: 12),
+                          Text(
+                            'Bộ nhớ AI',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      // Mocking storage stats for now as Dart doesn't have a simple cross-platform way
+                      // to get disk free space without a plugin.
+                      const LinearProgressIndicator(
+                        value: 0.15,
+                        backgroundColor: AppColors.surfaceCardBorder,
+                        color: AppColors.cyanAccent,
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Model Directory:',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                          Text(
+                            snapshot.hasData ? snapshot.data!.path.split('/').last : '...',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                  SizedBox(height: 16),
-                  LinearProgressIndicator(
-                    value: 0.15,
-                    backgroundColor: AppColors.surfaceCardBorder,
-                    color: AppColors.cyanAccent,
-                  ),
-                  SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Đã sử dụng: 1.2 GB',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                      Text(
-                        'Trống: 124 GB',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                );
+              },
             ),
             const SizedBox(height: 24),
 

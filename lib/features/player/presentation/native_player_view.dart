@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +25,8 @@ class NativePlayerView extends ConsumerStatefulWidget {
 
 class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
   VideoController? _videoController;
+  StreamSubscription? _posSub;
+  Duration _lastPos = Duration.zero;
 
   @override
   void initState() {
@@ -31,22 +34,55 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final ctrl = ref.read(mediaSessionControllerProvider.notifier);
-      await ctrl.openSource(widget.source);
-
       final session = ref.read(nativeMediaSessionProvider);
-      final p = session.player;
 
-      if (p != null && mounted) {
-        final controller = VideoController(p);
-        if (mounted) {
-          setState(() {
-            _videoController = controller;
-          });
-        }
+      final alreadyOpen = session.player != null &&
+          session.currentSnapshot.mediaIdentity == widget.source.finalUri.toString() &&
+          session.currentSnapshot.status != PlayerStatus.error;
+
+      if (!alreadyOpen) {
+        await ctrl.openSource(widget.source);
       }
 
-      ref.read(aiSchedulerProvider.notifier).initializeForSource(widget.source);
+      final p = session.player;
+      if (p != null && mounted) {
+        setState(() {
+          _videoController = VideoController(p);
+        });
+      }
+
+      final sched = ref.read(aiSchedulerProvider.notifier);
+      sched.attachPlayback(
+        pause: () => ref.read(mediaSessionControllerProvider.notifier).pause(),
+        play: () => ref.read(mediaSessionControllerProvider.notifier).play(),
+      );
+
+      await sched.initializeForSource(widget.source);
+
+      _posSub = session.snapshotStream.listen((s) {
+        final delta = (s.position - _lastPos).abs();
+        if (delta < const Duration(milliseconds: 200)) return; // throttle
+
+        final isJump = delta > Duration(milliseconds: (1500 * s.playbackRate).round()) &&
+            s.status != PlayerStatus.buffering;
+
+        _lastPos = s.position;
+        if (isJump) {
+          sched.handleSeek(s.position);
+        } else {
+          sched.updatePlaybackPosition(s.position);
+        }
+      });
     });
+  }
+
+  @override
+  void dispose() {
+    _posSub?.cancel();
+    // Use Future.microtask to avoid modifying providers during dispose if needed,
+    // but AiSchedulerController.stop() is safe here as it's autoDispose
+    ref.read(aiSchedulerProvider.notifier).stop();
+    super.dispose();
   }
 
   @override
@@ -62,17 +98,6 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
 
     final aiState = ref.watch(aiSchedulerProvider);
     final sessionSnapshot = ref.watch(mediaSessionControllerProvider);
-    final player = ref.read(nativeMediaSessionProvider).player;
-
-    ref.listen<AiSchedulerState>(aiSchedulerProvider, (previous, next) {
-      if (player == null) return;
-
-      if (next.isBufferingForAi && player.state.playing) {
-        ref.read(mediaSessionControllerProvider.notifier).pause();
-      } else if (!next.isBufferingForAi && previous?.isBufferingForAi == true) {
-        ref.read(mediaSessionControllerProvider.notifier).play();
-      }
-    });
 
     if (sessionSnapshot.status == PlayerStatus.error) {
       return ColoredBox(

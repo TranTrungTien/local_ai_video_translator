@@ -153,11 +153,11 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
       _diagnostics.log('FFmpegAudio', 'Pipe ready, opening stream...');
       final inputStream = file.openRead();
       var currentPts = startPosition ?? Duration.zero;
-      List<int> pendingBuffer = [];
+      final pending = BytesBuilder(copy: false);
       int totalBytesRead = 0;
 
       await for (final data in inputStream.timeout(
-        const Duration(seconds: 10), // Tăng timeout cho mạng chậm
+        const Duration(seconds: 10),
         onTimeout: (sink) {
           _diagnostics.log(
             'FFmpegAudio',
@@ -169,23 +169,27 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
       )) {
         cancellationToken?.throwIfCancelled();
         totalBytesRead += data.length;
-        pendingBuffer.addAll(data);
+        pending.add(data);
 
-        while (pendingBuffer.length >= bytesPerChunk) {
-          final chunkData = pendingBuffer.sublist(0, bytesPerChunk);
-          pendingBuffer = pendingBuffer.sublist(bytesPerChunk);
-
-          yield PcmChunk(
-            pts: currentPts,
-            sampleRate: sampleRate,
-            channels: channels,
-            bytes: Uint8List.fromList(chunkData),
-            playbackSessionId: playbackSessionId,
-            timelineEpoch: timelineEpoch,
-            seekGeneration: seekGeneration,
-          );
-
-          currentPts += const Duration(milliseconds: chunkDurationMs);
+        if (pending.length >= bytesPerChunk) {
+          final all = pending.takeBytes();
+          var off = 0;
+          while (all.length - off >= bytesPerChunk) {
+            yield PcmChunk(
+              pts: currentPts,
+              sampleRate: sampleRate,
+              channels: channels,
+              bytes: Uint8List.sublistView(all, off, off + bytesPerChunk),
+              playbackSessionId: playbackSessionId,
+              timelineEpoch: timelineEpoch,
+              seekGeneration: seekGeneration,
+            );
+            off += bytesPerChunk;
+            currentPts += const Duration(milliseconds: chunkDurationMs);
+          }
+          if (off < all.length) {
+            pending.add(Uint8List.sublistView(all, off));
+          }
         }
       }
 
@@ -194,20 +198,25 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
         'Stream closed. Total bytes: $totalBytesRead',
       );
 
-      if (pendingBuffer.isNotEmpty && !cancellationToken!.isCancelled) {
-        yield PcmChunk(
-          pts: currentPts,
-          sampleRate: sampleRate,
-          channels: channels,
-          bytes: Uint8List.fromList(pendingBuffer),
-          playbackSessionId: playbackSessionId,
-          timelineEpoch: timelineEpoch,
-          seekGeneration: seekGeneration,
-        );
+      if (pending.isNotEmpty && !(cancellationToken?.isCancelled ?? false)) {
+        final remaining = pending.takeBytes();
+        // Ensure even number of bytes for Int16List conversion if needed elsewhere
+        final length = remaining.length & ~1;
+        if (length > 0) {
+          yield PcmChunk(
+            pts: currentPts,
+            sampleRate: sampleRate,
+            channels: channels,
+            bytes: Uint8List.sublistView(remaining, 0, length),
+            playbackSessionId: playbackSessionId,
+            timelineEpoch: timelineEpoch,
+            seekGeneration: seekGeneration,
+          );
+        }
       }
     } catch (e) {
-      if (e is OperationCancelledException) {
-        _diagnostics.log('FFmpegAudio', 'Extraction cancelled');
+      if (e is OperationCancelledException || (cancellationToken?.isCancelled ?? false)) {
+        _diagnostics.log('FFmpegAudio', 'Extraction cancelled', level: LogLevel.info);
       } else {
         _diagnostics.log(
           'FFmpegAudio',

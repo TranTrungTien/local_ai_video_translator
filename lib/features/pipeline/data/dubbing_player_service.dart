@@ -10,7 +10,7 @@ class DubbingPlayerService {
   DubbingPlayerService(this._repository) {
     _player.stream.completed.listen((_) {
       _duckingController.add(false);
-      _cleanupTempFile();
+      // _cleanupTempFile(); // Keep file for potential reuse or handle safely
     });
   }
 
@@ -18,19 +18,33 @@ class DubbingPlayerService {
   final Player _player = Player();
   final _duckingController = StreamController<bool>.broadcast();
   File? _tempWavFile;
+  bool _isEnabled = true;
 
   Duration? _lastPlayedStart;
 
   Stream<bool> get duckingStream => _duckingController.stream;
 
+  void setEnabled(bool enabled) {
+    _isEnabled = enabled;
+    if (!enabled) {
+      _player.stop();
+      _duckingController.add(false);
+    }
+  }
+
   void syncWithPlayback(Duration position, bool isVideoPlaying) {
-    if (!isVideoPlaying) {
+    if (!_isEnabled || !isVideoPlaying) {
       if (_player.state.playing) _player.pause();
       return;
     }
 
     final segment = _repository.getSegmentAt(position);
     if (segment != null && _lastPlayedStart != segment.startPts) {
+      // Ensure we don't restart if already playing the same segment near its start
+      final currentPos = _player.state.position;
+      if (_player.state.playing && currentPos > Duration.zero && currentPos < const Duration(milliseconds: 500)) {
+         return;
+      }
       _playSegment(segment);
     }
   }

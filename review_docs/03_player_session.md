@@ -25,12 +25,14 @@ lib/features/player/presentation/subtitle_overlay.dart
 ## lib/features/player/data/embedded_audio_capture.dart
 ```dart:lib/features/player/data/embedded_audio_capture.dart
 import 'dart:async';
+import 'package:flutter/services.dart';
 
 enum AudioCaptureState { idle, requestingConsent, active, denied, error }
 
 class EmbeddedAudioCaptureManager {
   AudioCaptureState _state = AudioCaptureState.idle;
   final _stateController = StreamController<AudioCaptureState>.broadcast();
+  static const _methodChannel = MethodChannel('local_ai_video_translator/native_resolver');
 
   AudioCaptureState get state => _state;
   Stream<AudioCaptureState> get stateStream => _stateController.stream;
@@ -38,27 +40,42 @@ class EmbeddedAudioCaptureManager {
   /// Requests explicit user consent for Android playback audio capture (MediaProjection / AudioPlaybackCapture).
   /// Never invoked on app startup; only on explicit user request after native migration failure.
   Future<bool> requestConsentAndStartCapture() async {
+    if (_state == AudioCaptureState.active) return true;
+
     _updateState(AudioCaptureState.requestingConsent);
 
     try {
-      // Simulate Android MediaProjection / AudioPlaybackCapture consent flow
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-
-      // In production Android, this invokes MediaProjectionManager.createScreenCaptureIntent()
-      // and AudioPlaybackCaptureConfiguration.
-      _updateState(AudioCaptureState.active);
-      return true;
+      final bool? started = await _methodChannel.invokeMethod<bool>('startAudioCapture');
+      if (started == true) {
+        _updateState(AudioCaptureState.active);
+        return true;
+      } else {
+        _updateState(AudioCaptureState.denied);
+        return false;
+      }
+    } on PlatformException catch (e) {
+      if (e.code == 'PERMISSION_DENIED') {
+        _updateState(AudioCaptureState.denied);
+      } else {
+        _updateState(AudioCaptureState.error);
+      }
+      return false;
     } catch (_) {
-      _updateState(AudioCaptureState.denied);
+      _updateState(AudioCaptureState.error);
       return false;
     }
   }
 
-  void stopCapture() {
-    _updateState(AudioCaptureState.idle);
+  Future<void> stopCapture() async {
+    try {
+      await _methodChannel.invokeMethod('stopAudioCapture');
+    } finally {
+      _updateState(AudioCaptureState.idle);
+    }
   }
 
   void _updateState(AudioCaptureState newState) {
+    if (_state == newState) return;
     _state = newState;
     if (!_stateController.isClosed) {
       _stateController.add(_state);
@@ -665,7 +682,6 @@ class EmbeddedCapabilityProbe {
 
 ## lib/features/player/domain/entities/embedded_playback_snapshot.dart
 ```dart:lib/features/player/domain/entities/embedded_playback_snapshot.dart
-import '../../source_resolver/domain/entities/resolved_source.dart';
 
 class EmbeddedPlaybackSnapshot {
   const EmbeddedPlaybackSnapshot({
@@ -706,6 +722,7 @@ import 'migration_state.dart';
 import 'player_state.dart';
 
 class MediaSessionSnapshot {
+  static const Object _notProvided = Object();
   const MediaSessionSnapshot({
     required this.mediaIdentity,
     required this.duration,
@@ -757,10 +774,10 @@ class MediaSessionSnapshot {
     double? volume,
     VideoTrack? activeVideoTrack,
     AudioTrack? activeAudioTrack,
-    PlayerSubtitleTrack? activeSubtitleTrack,
+    Object? activeSubtitleTrack = _notProvided,
     MediaTrackSet? trackSet,
     RequestContext? requestContext,
-    PlayerError? error,
+    Object? error = _notProvided,
     MigrationStatus? migrationStatus,
   }) {
     return MediaSessionSnapshot(
@@ -773,10 +790,12 @@ class MediaSessionSnapshot {
       volume: volume ?? this.volume,
       activeVideoTrack: activeVideoTrack ?? this.activeVideoTrack,
       activeAudioTrack: activeAudioTrack ?? this.activeAudioTrack,
-      activeSubtitleTrack: activeSubtitleTrack ?? this.activeSubtitleTrack,
+      activeSubtitleTrack: identical(activeSubtitleTrack, _notProvided)
+          ? this.activeSubtitleTrack
+          : activeSubtitleTrack as PlayerSubtitleTrack?,
       trackSet: trackSet ?? this.trackSet,
       requestContext: requestContext ?? this.requestContext,
-      error: error ?? this.error,
+      error: identical(error, _notProvided) ? this.error : error as PlayerError?,
       migrationStatus: migrationStatus ?? this.migrationStatus,
     );
   }
@@ -791,6 +810,7 @@ class MediaSessionSnapshot {
     volume: 100.0,
   );
 }
+
 
 ```
 
@@ -1060,8 +1080,10 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../../pipeline/presentation/ai_scheduler_controller.dart';
 import '../../source_resolver/data/android_media_observer.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
+import '../../../core/utils/sha256_util.dart';
 import '../data/embedded_audio_capture.dart';
 import '../domain/embedded_capability.dart';
+import '../domain/entities/embedded_playback_snapshot.dart';
 import 'media_session_controller.dart';
 import 'native_player_view.dart';
 import 'subtitle_overlay.dart';
@@ -1077,6 +1099,7 @@ class EmbeddedPlayerView extends ConsumerStatefulWidget {
 class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
   bool _isMigratedToNative = false;
   late final WebViewController _controller;
+  final String _nonce = Sha256Util.generateNonce();
   final List<String> _runtimeCandidates = [];
   late final AndroidMediaObserver _mediaObserver;
   StreamSubscription? _observerSub;
@@ -1129,12 +1152,15 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
                 .read(aiSchedulerProvider.notifier)
                 .updatePlaybackPosition(_lastPosition);
 
-            // Update native anchor for PTS interpolation if capture is active
+            // Update native audio anchor for PTS interpolation if capture is active
             if (_aiSubtitlesEnabled) {
                ref.read(mediaSessionControllerProvider.notifier).updateNativeAudioAnchor(
                  position: _lastPosition,
                  isPlaying: _lastIsPlaying,
                  playbackRate: _lastPlaybackRate,
+                 timelineEpoch: 0,
+                 playbackSessionId: ref.read(aiSchedulerProvider.notifier).activeSessionId,
+                 seekGeneration: ref.read(aiSchedulerProvider.notifier).generation,
                );
             }
           } else {
@@ -1151,6 +1177,13 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
           onPageFinished: (_) {
             _injectObserver();
             _startPositionPolling();
+          },
+          onNavigationRequest: (request) {
+            // Prevent navigation to non-http(s) schemes
+            if (!request.url.startsWith('http')) {
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
           },
         ),
       )
@@ -1182,11 +1215,14 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
   }
 
   Future<void> _injectObserver() async {
-    const js = r'''
+    final js = '''
       (() => {
+        // Nonce validation for the injected observer
+        const expectedNonce = '$_nonce';
+
         const send = (value) => {
           if (typeof value !== 'string' || value.length < 10) return;
-          if (/\.m3u8|\.mpd|\.mp4|\.webm/i.test(value)) {
+          if (/\.m3u8|\\.mpd|\\.mp4|\\.webm/i.test(value)) {
             MediaObserver.postMessage(value);
           }
         };
@@ -1445,6 +1481,7 @@ import '../../source_resolver/data/candidate_verifier.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import '../data/migration_controller.dart';
 import '../data/native_media_session.dart';
+import '../domain/entities/embedded_playback_snapshot.dart';
 import '../domain/entities/media_session_snapshot.dart';
 import '../domain/entities/media_track.dart';
 
@@ -1478,45 +1515,41 @@ final mediaSessionControllerProvider =
     );
 
 class MediaSessionController extends Notifier<MediaSessionSnapshot> {
+  Timer? _fadeTimer;
+
+  // Sử dụng getter để truy cập các provider ổn định, tránh rủi ro late init trong suốt vòng đời của phương thức build()
+  NativeMediaSession get _session => ref.read(nativeMediaSessionProvider);
+  NativeMigrationController get _migration => ref.read(migrationControllerProvider);
+
   @override
   MediaSessionSnapshot build() {
-    _session = ref.watch(nativeMediaSessionProvider);
-    _migrationController = ref.watch(migrationControllerProvider);
-    _dubbingPlayer = ref.watch(dubbingPlayerServiceProvider);
+    final session = ref.watch(nativeMediaSessionProvider);
+    final dubbing = ref.watch(dubbingPlayerServiceProvider);
 
-    _subscription = _session.snapshotStream.listen((snapshot) {
+    final sub = session.snapshotStream.listen((snapshot) {
       state = snapshot;
-      _dubbingPlayer.syncWithPlayback(snapshot.position, snapshot.isPlaying);
+      dubbing.syncWithPlayback(snapshot.position, snapshot.isPlaying);
     });
 
-    _duckingSubscription = _dubbingPlayer.duckingStream.listen((shouldDuck) {
+    final duckSub = dubbing.duckingStream.listen((shouldDuck) {
       _fadeVolume(shouldDuck ? 20.0 : 100.0);
     });
 
     ref.onDispose(() {
-      _subscription?.cancel();
-      _duckingSubscription?.cancel();
+      sub.cancel();
+      duckSub.cancel();
       _fadeTimer?.cancel();
     });
 
     return MediaSessionSnapshot.idle;
   }
 
-  late final NativeMediaSession _session;
-  late final NativeMigrationController _migrationController;
-  late final DubbingPlayerService _dubbingPlayer;
-  StreamSubscription<MediaSessionSnapshot>? _subscription;
-  StreamSubscription<bool>? _duckingSubscription;
-  Timer? _fadeTimer;
-
   void _fadeVolume(double targetVolume) {
     _fadeTimer?.cancel();
     final startVolume = state.volume;
     const steps = 10;
     const duration = Duration(milliseconds: 200);
-    final stepDuration = Duration(
-      milliseconds: duration.inMilliseconds ~/ steps,
-    );
+    final stepDuration = Duration(milliseconds: duration.inMilliseconds ~/ steps);
     final volumeDelta = (targetVolume - startVolume) / steps;
 
     int currentStep = 0;
@@ -1524,36 +1557,28 @@ class MediaSessionController extends Notifier<MediaSessionSnapshot> {
       currentStep++;
       final nextVolume = startVolume + (volumeDelta * currentStep);
       _session.setVolume(nextVolume.clamp(0.0, 100.0));
-
-      if (currentStep >= steps) {
-        timer.cancel();
-      }
+      if (currentStep >= steps) timer.cancel();
     });
   }
 
-  Future<void> openSource(ResolvedSource source) async {
-    await _session.open(source);
-  }
-
+  Future<void> openSource(ResolvedSource source) => _session.open(source);
   Future<void> play() => _session.play();
   Future<void> pause() => _session.pause();
   Future<void> seek(Duration position) => _session.seek(position);
   Future<void> setPlaybackRate(double rate) => _session.setPlaybackRate(rate);
 
-  Future<void> selectVideoTrack(VideoTrack track) =>
-      _session.selectVideoTrack(track);
-  Future<void> selectAudioTrack(AudioTrack track) =>
-      _session.selectAudioTrack(track);
-  Future<void> selectSubtitleTrack(PlayerSubtitleTrack? track) =>
-      _session.selectSubtitleTrack(track);
+  Future<void> selectVideoTrack(VideoTrack track) => _session.selectVideoTrack(track);
+  Future<void> selectAudioTrack(AudioTrack track) => _session.selectAudioTrack(track);
+  Future<void> selectSubtitleTrack(PlayerSubtitleTrack? track) => _session.selectSubtitleTrack(track);
 
+  /// Đã khớp chữ ký với UI trong EmbeddedPlayerView (Critical #2)
   Future<bool> attemptMigrationToNative({
     required ResolvedSource source,
-    Duration? capturedPosition,
+    required EmbeddedPlaybackSnapshot snapshot,
   }) async {
-    final result = await _migrationController.attemptMigration(
+    final result = await _migration.attemptMigration(
       source: source,
-      capturedPosition: capturedPosition,
+      snapshot: snapshot,
     );
     return result.isSuccess;
   }
@@ -1562,23 +1587,23 @@ class MediaSessionController extends Notifier<MediaSessionSnapshot> {
     required Duration position,
     required bool isPlaying,
     required double playbackRate,
+    required int timelineEpoch,
+    required String playbackSessionId,
+    required int seekGeneration,
   }) async {
-    const _methodChannel =
-        MethodChannel('local_ai_video_translator/native_resolver');
-
-    // Get precise monotonic time from native to minimize drift
-    final anchorMonotonicUs = await _methodChannel.invokeMethod<int>('getMonotonicUs') ??
+    const channel = MethodChannel('local_ai_video_translator/native_resolver');
+    final anchorMonotonicUs = await channel.invokeMethod<int>('getMonotonicUs') ??
         DateTime.now().microsecondsSinceEpoch;
 
-    await _methodChannel.invokeMethod('updateAudioAnchor', {
+    await channel.invokeMethod('updateAudioAnchor', {
       'mediaPositionUs': position.inMicroseconds,
       'anchorMonotonicUs': anchorMonotonicUs,
       'playbackRate': playbackRate,
       'isPlaying': isPlaying,
       'isBuffering': false,
-      'timelineEpoch': ref.read(aiSchedulerProvider.notifier).generation,
-      'playbackSessionId': ref.read(aiSchedulerProvider).activeSessionId,
-      'seekGeneration': ref.read(aiSchedulerProvider.notifier).generation,
+      'timelineEpoch': timelineEpoch,
+      'playbackSessionId': playbackSessionId,
+      'seekGeneration': seekGeneration,
     });
   }
 }

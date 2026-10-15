@@ -1270,7 +1270,7 @@ class ResolvedSource {
 
 ## lib/features/source_resolver/domain/repositories/source_resolver_repository.dart
 ```dart:lib/features/source_resolver/domain/repositories/source_resolver_repository.dart
-import '../../../core/utils/cancellation_token.dart';
+import '../../../../core/utils/cancellation_token.dart';
 import '../entities/resolved_source.dart';
 
 abstract interface class SourceResolverRepository {
@@ -1281,7 +1281,7 @@ abstract interface class SourceResolverRepository {
 
 ## lib/features/source_resolver/domain/usecases/resolve_source.dart
 ```dart:lib/features/source_resolver/domain/usecases/resolve_source.dart
-import '../../../core/utils/cancellation_token.dart';
+import '../../../../core/utils/cancellation_token.dart';
 import '../entities/resolved_source.dart';
 import '../repositories/source_resolver_repository.dart';
 
@@ -1956,6 +1956,7 @@ class _CapabilityRow extends StatelessWidget {
 
 ## lib/features/source_resolver/presentation/source_resolver_controller.dart
 ```dart:lib/features/source_resolver/presentation/source_resolver_controller.dart
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/dio_provider.dart';

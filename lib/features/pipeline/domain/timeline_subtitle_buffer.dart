@@ -92,17 +92,24 @@ class TimelineSubtitleBuffer {
 
     for (final range in allKnown) {
       if (range.end <= current) continue;
+
+      // If there's a gap larger than 100ms, we check if VAD has cleared this gap.
       if (range.start > current + const Duration(milliseconds: 100)) {
         if (range.start > _vadProgress) {
+          // VAD hasn't reached the next segment yet, so we're only sure until 'current'.
           _watermark = current;
           return;
         }
+        // VAD cleared the gap, move 'current' to start of this range.
         current = range.start;
       }
+
       if (range.isPending) {
+        // We hit a segment that is still being processed.
         _watermark = current;
         return;
       }
+
       if (range.end > current) current = range.end;
     }
 

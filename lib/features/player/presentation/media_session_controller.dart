@@ -6,6 +6,7 @@ import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../../core/network/dio_provider.dart';
 import '../../pipeline/data/dubbing_player_service.dart';
 import '../../pipeline/presentation/ai_scheduler_controller.dart';
+import '../../pipeline/presentation/dubbing_controller.dart';
 import '../../source_resolver/data/candidate_verifier.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import '../data/migration_controller.dart';
@@ -53,14 +54,18 @@ class MediaSessionController extends Notifier<MediaSessionSnapshot> {
   @override
   MediaSessionSnapshot build() {
     final session = ref.watch(nativeMediaSessionProvider);
-    final dubbing = ref.watch(dubbingPlayerServiceProvider);
+    final dubbingService = ref.watch(dubbingPlayerServiceProvider);
+    final dubbingEnabled = ref.watch(dubbingControllerProvider);
+
+    // Sync enabled state
+    dubbingService.setEnabled(dubbingEnabled);
 
     final sub = session.snapshotStream.listen((snapshot) {
       state = snapshot;
-      dubbing.syncWithPlayback(snapshot.position, snapshot.isPlaying);
+      dubbingService.syncWithPlayback(snapshot.position, snapshot.isPlaying);
     });
 
-    final duckSub = dubbing.duckingStream.listen((shouldDuck) {
+    final duckSub = dubbingService.duckingStream.listen((shouldDuck) {
       _fadeVolume(shouldDuck ? 20.0 : 100.0);
     });
 

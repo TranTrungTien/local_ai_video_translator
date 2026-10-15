@@ -43,8 +43,10 @@ class AiBufferPanel extends ConsumerWidget {
                 Row(
                   children: [
                     Icon(
-                      isNative ? Icons.auto_awesome : Icons.language,
-                      color: const Color(0xFF7C5CFC),
+                      aiState.errorMessage != null
+                          ? Icons.error_outline
+                          : (isNative ? Icons.auto_awesome : Icons.language),
+                      color: aiState.errorMessage != null ? Colors.redAccent : const Color(0xFF7C5CFC),
                       size: 20,
                     ),
                     const SizedBox(width: 8),
@@ -59,12 +61,20 @@ class AiBufferPanel extends ConsumerWidget {
                               fontSize: 13,
                               color: aiState.errorMessage != null ? Colors.redAccent : Colors.white,
                             ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 2),
-                          Text(
-                            'RTF: STT ${metrics.sttRtf.toStringAsFixed(2)}x | TTS ${metrics.ttsRtf.toStringAsFixed(2)}x',
-                            style: const TextStyle(fontSize: 10, color: Colors.white54),
-                          ),
+                          if (aiState.errorMessage == null)
+                            Text(
+                              'RTF: STT ${metrics.sttRtf.toStringAsFixed(2)}x | TTS ${metrics.ttsRtf.toStringAsFixed(2)}x',
+                              style: const TextStyle(fontSize: 10, color: Colors.white54),
+                            )
+                          else
+                            const Text(
+                              'Tải model trong Cài đặt > Quản lý Model AI',
+                              style: TextStyle(fontSize: 10, color: Colors.white38),
+                            ),
                         ],
                       ),
                     ),

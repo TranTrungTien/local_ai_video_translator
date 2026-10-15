@@ -1,6 +1,6 @@
 # Review Module: 99. Các File Mã Nguồn Khác
 
-## Included Files (71 files)
+## Included Files (70 files)
 
 ```text
 .gitignore
@@ -13,7 +13,6 @@ android/app/src/main/res/values-night/styles.xml
 android/app/src/main/res/values/styles.xml
 android/gradle.properties
 android/gradle/wrapper/gradle-wrapper.properties
-android/local.properties
 assets/models/.gitkeep
 devtools_options.yaml
 gen.dart
@@ -329,11 +328,6 @@ zipStoreBase=GRADLE_USER_HOME
 zipStorePath=wrapper/dists
 distributionUrl=https\://services.gradle.org/distributions/gradle-8.14-all.zip
 
-```
-
-## android/local.properties
-```text:android/local.properties
-flutter.sdk=C:\\Users\\tientt13\\flutter
 ```
 
 ## assets/models/.gitkeep

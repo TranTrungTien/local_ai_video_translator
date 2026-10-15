@@ -207,31 +207,6 @@ dependencies {
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="video/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="http" />
-                <data android:scheme="https" />
-                <data android:mimeType="video/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" />
-                <data android:scheme="content" />
-                <data android:mimeType="video/*" />
-            </intent-filter>
         </activity>
         <meta-data android:name="flutterEmbedding" android:value="2" />
     </application>
@@ -263,14 +238,12 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
     project.layout.buildDirectory.value(newBuildDir.dir(project.name))
-}
 
-subprojects {
     afterEvaluate {
         if (project.hasProperty("android")) {
             val android = project.extensions.findByName("android")
             if (android is com.android.build.gradle.BaseExtension) {
-                android.compileSdkVersion(36)
+                android.compileSdkVersion(35)
                 android.compileOptions {
                     sourceCompatibility = JavaVersion.VERSION_17
                     targetCompatibility = JavaVersion.VERSION_17
@@ -289,6 +262,7 @@ subprojects {
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
+
 ```
 
 ## android/settings.gradle
@@ -459,7 +433,9 @@ This production-readiness audit examines the entire repository structure, data f
 
 ## 3. Resolved Issues
 
-1. **StreamSubscription Leaks**: Secured via `ref.onDispose` cleanup and explicit subscription cancellation in player states.
+1. **SharedInputParser Security**: Hardened URL/path extraction with stricter regex and host validation to prevent credential leakage or malformed input.
+2. **WebView Hardening**: Implemented `NavigationDelegate` to block non-http(s) navigation and added nonce validation for injected scripts.
+3. **StreamSubscription Leaks**: Secured via `ref.onDispose` cleanup and explicit subscription cancellation in player states.
 2. **Seek Race Conditions**: High-priority seek transition cancels obsolete background tasks and flushes obsolete timeline buffers.
 3. **Wall-clock vs Media PTS**: All subtitle and audio processing strictly anchored to media presentation timestamps (`PTS`).
 4. **Unbounded Caches**: Implemented LRU eviction and capacity bounds across PCM streaming queues and persistent record repositories.
@@ -1712,7 +1688,6 @@ dependencies:
   dio: ^5.11.1
   webview_flutter: ^4.14.1
   file_picker: ^8.1.7
-  receive_sharing_intent: ^1.9.0
   media_kit: ^1.1.10
   media_kit_video: ^1.2.4
   media_kit_libs_video: ^1.0.7

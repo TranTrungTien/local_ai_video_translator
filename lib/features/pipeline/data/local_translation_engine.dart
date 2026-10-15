@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -33,38 +33,53 @@ class LocalTranslationEngine implements TranslationEngine {
 
   static const String modelId = 'translate_opus_en_vi';
 
-  OrtSession? _session;
+  OrtSession? _encoderSession;
+  OrtSession? _decoderSession;
   SimpleTokenizer? _tokenizer;
   final List<TimedTextSegment> _contextHistory = [];
+
+  Completer<void>? _activeInference;
 
   TranslationMetrics get metrics => _metrics;
   TranslationCache get cache => _cache;
 
   @override
-  bool get installed => true;
+  bool get installed => _encoderSession != null && _decoderSession != null;
 
   Future<void> _ensureInitialized() async {
-    if (_session != null && _tokenizer != null) return;
+    if (_encoderSession != null && _decoderSession != null && _tokenizer != null) return;
 
     if (Platform.environment.containsKey('FLUTTER_TEST')) return;
 
-    final modelFile = await _modelRepository.getModelFile(modelId, 'encoder_model_quantized.onnx');
-    if (!await modelFile.exists()) {
-      throw Exception('Opus-MT model not found. Please download it in settings.');
+    final encoderFile = await _modelRepository.getModelFile(
+      modelId,
+      'encoder_model_quantized.onnx',
+    );
+    final decoderFile = await _modelRepository.getModelFile(
+      modelId,
+      'decoder_model_merged_quantized.onnx',
+    );
+
+    if (!await encoderFile.exists() || !await decoderFile.exists()) {
+      throw ModelDownloadException('Opus-MT models (encoder/decoder) missing. Please download them in settings.');
     }
 
-    // Try to load accompanying vocab if exists, else use fallback
+    // Try to load accompanying vocab if exists
     final dir = await _modelRepository.getModelDir(modelId);
     final vocabFile = File('${dir.path}/vocab.json');
     if (await vocabFile.exists()) {
       _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
-    } else {
-      // Minimal fallback vocab for basic functionality
-      _tokenizer = await SimpleTokenizer.load(jsonEncode({' ': 1, 's': 2, 'unk': 3}));
     }
 
     final sessionOptions = OrtSessionOptions();
-    _session = await OnnxRuntime().createSession(modelFile.path, options: sessionOptions);
+    _encoderSession = await OnnxRuntime().createSession(
+      encoderFile.path,
+      options: sessionOptions,
+    );
+    _decoderSession = await OnnxRuntime().createSession(
+      decoderFile.path,
+      options: sessionOptions,
+    );
   }
 
   Future<bool> isModelReady() async {
@@ -81,10 +96,17 @@ class LocalTranslationEngine implements TranslationEngine {
     final token = cancellationToken ?? CancellationToken();
     token.throwIfCancelled();
 
-    await _ensureInitialized();
-    token.throwIfCancelled();
+    while (_activeInference != null) {
+      await _activeInference!.future;
+    }
+    _activeInference = Completer<void>();
 
-    final stopwatch = Stopwatch()..start();
+    try {
+      await _ensureInitialized();
+      token.throwIfCancelled();
+
+      final stopwatch = Stopwatch()..start();
+      // ... rest of logic
     final translatedSegments = <TimedTextSegment>[];
 
     // Batching segments for latency/memory balance
@@ -107,6 +129,7 @@ class LocalTranslationEngine implements TranslationEngine {
             seg.text,
             targetLanguage,
             _contextHistory,
+            token,
           );
           token.throwIfCancelled();
           translatedText = _compressor.compress(translatedText);
@@ -147,45 +170,63 @@ class LocalTranslationEngine implements TranslationEngine {
     );
 
     return translatedSegments;
+    } finally {
+      final lock = _activeInference;
+      _activeInference = null;
+      lock?.complete();
+    }
   }
 
   Future<String> _runInference(
     String text,
     String targetLang,
     List<TimedTextSegment> context,
+    CancellationToken token,
   ) async {
     if (targetLang != 'vi') return text;
     final clean = text.trim();
     if (clean.isEmpty) return '';
 
-    final session = _session;
-    if (session == null) return _mockTranslate(clean);
+    if (_encoderSession == null || _decoderSession == null) {
+      throw ModelContractException('Opus-MT sessions not initialized');
+    }
 
     try {
-      final prefix = targetLang == 'vi' ? '>>vie<< ' : '';
-      final inputIds = _tokenizer?.encode(prefix + clean) ?? clean.codeUnits;
+      final inputIds = _tokenizer?.encode(clean) ?? clean.codeUnits;
 
       final inputOrt = await OrtValue.fromList(
         Int64List.fromList(inputIds),
         [1, inputIds.length],
       );
 
-      final inputs = {'input_ids': inputOrt};
+      final attentionMaskOrt = await OrtValue.fromList(
+        Int64List.fromList(List.filled(inputIds.length, 1)),
+        [1, inputIds.length],
+      );
 
-      final outputs = await session.run(inputs);
-      final outputVal = outputs['output_ids'];
-      final outputTensor = outputVal != null ? await outputVal.asList() as List<List<dynamic>>? : null;
+      final encoderOutputs = await _encoderSession!.run({
+        'input_ids': inputOrt,
+        'attention_mask': attentionMaskOrt,
+      });
+      final encoderHiddenStates = encoderOutputs['last_hidden_state'];
 
-      await inputOrt.dispose();
-      await outputVal?.dispose();
-
-    // 4. Decode Outputs
-      if (outputTensor != null && outputTensor.isNotEmpty) {
-        final tokens = outputTensor[0].map((e) => (e as num).toInt()).toList();
-        return _tokenizer?.decode(tokens) ?? String.fromCharCodes(tokens);
+      if (encoderHiddenStates == null) {
+        throw ModelContractException('Opus-MT Encoder: missing last_hidden_state');
       }
 
-      throw ModelContractException('Opus-MT: output_ids tensor is empty or null');
+      final decodedTokens = await _runDecoderLoop(
+        encoderHiddenStates,
+        attentionMaskOrt,
+        token,
+      );
+
+      await inputOrt.dispose();
+      await attentionMaskOrt.dispose();
+      for (var o in encoderOutputs.values) {
+        await o.dispose();
+      }
+
+      return _tokenizer?.decode(decodedTokens) ?? String.fromCharCodes(decodedTokens);
     } catch (e, st) {
       _diagnostics.log('TRANSLATION_ENGINE', 'Inference error: $e', level: LogLevel.error, details: st);
       if (e is ModelContractException) rethrow;
@@ -193,20 +234,89 @@ class LocalTranslationEngine implements TranslationEngine {
     }
   }
 
-  String _mockTranslate(String text) {
-    final lower = text.toLowerCase();
-    bool matches(String word) =>
-        RegExp('\\b$word\\b', caseSensitive: false).hasMatch(lower);
+  Future<List<int>> _runDecoderLoop(
+    OrtValue encoderHiddenStates,
+    OrtValue encoderAttentionMask,
+    CancellationToken token,
+  ) async {
+    final tokens = <int>[];
+    // Marian en-vi (Xenova) decoder start token
+    const int startToken = 59513;
+    const int eosToken = 0;
 
-    if (matches('hello') || matches('hi')) return 'Xin chào';
-    if (matches('welcome')) return 'Chào mừng bạn đến với chương trình';
-    if (matches('episode') || matches('movie')) return 'Tập phim';
-    if (matches('thank you') || matches('thanks')) return 'Cảm ơn bạn rất nhiều';
+    tokens.add(startToken);
+    const int maxNewTokens = 256;
 
-    return 'Dịch (AI): $text';
+    for (int i = 0; i < maxNewTokens; i++) {
+      token.throwIfCancelled();
+
+      final inputIdsOrt = await OrtValue.fromList(
+        Int64List.fromList(tokens),
+        [1, tokens.length],
+      );
+
+      // Mask cho decoder (self-attention) có độ dài khớp với số lượng tokens hiện tại
+      final decoderMaskOrt = await OrtValue.fromList(
+        Int64List.fromList(List.filled(tokens.length, 1)),
+        [1, tokens.length],
+      );
+
+      final useCacheBranchOrt = await OrtValue.fromList([false], [1]);
+
+      final inputs = {
+        'input_ids': inputIdsOrt,
+        'encoder_hidden_states': encoderHiddenStates,
+        'attention_mask': decoderMaskOrt,               // Self-attention mask
+        'encoder_attention_mask': encoderAttentionMask, // Cross-attention mask
+        'use_cache_branch': useCacheBranchOrt,
+      };
+
+      final outputs = await _decoderSession!.run(inputs);
+      final logitsVal = outputs['logits'];
+
+      if (logitsVal == null) {
+        await inputIdsOrt.dispose();
+        await decoderMaskOrt.dispose();
+        await useCacheBranchOrt.dispose();
+        for (var o in outputs.values) {
+          await o.dispose();
+        }
+        break;
+      }
+
+      final logitsList = await logitsVal.asList();
+      final lastLogits = (logitsList[0] as List).last as List;
+
+      int nextToken = 0;
+      double maxLogit = -double.infinity;
+      for (int j = 0; j < lastLogits.length; j++) {
+        final val = (lastLogits[j] as num).toDouble();
+        if (val > maxLogit) {
+          maxLogit = val;
+          nextToken = j;
+        }
+      }
+
+      await inputIdsOrt.dispose();
+      await decoderMaskOrt.dispose();
+      await useCacheBranchOrt.dispose();
+      for (var o in outputs.values) {
+        await o.dispose();
+      }
+
+      if (nextToken == eosToken) break;
+      tokens.add(nextToken);
+
+      // Avoid infinite loops if model misbehaves
+      if (tokens.length > maxNewTokens) break;
+    }
+
+    // Filter out special tokens and start token
+    return tokens.where((t) => t != startToken && t != eosToken).toList();
   }
 
   void dispose() {
-    _session?.close();
+    _encoderSession?.close();
+    _decoderSession?.close();
   }
 }

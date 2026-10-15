@@ -26,12 +26,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
 import '../../source_resolver/presentation/source_resolver_controller.dart';
-import '../../../core/utils/shared_input_parser.dart';
 
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
@@ -42,41 +40,12 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   final _controller = TextEditingController();
-  StreamSubscription<List<SharedMediaFile>>? _shareSubscription;
 
   bool _isPickingFile = false;
 
   @override
   void initState() {
     super.initState();
-    _listenToShares();
-  }
-
-  void _listenToShares() {
-    _shareSubscription = ReceiveSharingIntent.instance.getMediaStream().listen(
-      _consumeSharedItems,
-    );
-    ReceiveSharingIntent.instance.getInitialMedia().then(_consumeSharedItems);
-  }
-
-  void _consumeSharedItems(List<SharedMediaFile> items) {
-    if (items.isEmpty || !mounted) return;
-
-    final rawPath = items.first.path;
-    final value = SharedInputParser.extract(rawPath);
-
-    // Reset so the same intent doesn't trigger again on rebuild
-    ReceiveSharingIntent.instance.reset();
-
-    if (value == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không tìm thấy liên kết video hợp lệ.')),
-      );
-      return;
-    }
-
-    _controller.text = value;
-    unawaited(_resolve(value));
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -147,7 +116,6 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   void dispose() {
-    _shareSubscription?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -685,6 +653,14 @@ class ModelIntegrityException implements Exception {
   String toString() => 'ModelIntegrityException: $message';
 }
 
+/// Thrown when the model tensor contract (inputs/outputs/metadata) is unverified or incompatible.
+class ModelContractException implements Exception {
+  ModelContractException(this.message);
+  final String message;
+  @override
+  String toString() => 'ModelContractException: $message';
+}
+
 const String _whisperBase =
     'https://huggingface.co/Xenova/whisper-tiny/resolve/e1309fbf61a10485319f046062a3b5dca5b7b9fb';
 const String _opusBase =
@@ -731,32 +707,38 @@ class ModelManagerRepository {
         ModelFile(
           name: 'config.json',
           url: '$_whisperBase/config.json',
-          bytes: 2250,
+          bytes: 2248,
+          sha256: null,
         ),
         ModelFile(
           name: 'generation_config.json',
           url: '$_whisperBase/generation_config.json',
-          bytes: 3720,
+          bytes: 3716,
+          sha256: null,
         ),
         ModelFile(
           name: 'preprocessor_config.json',
           url: '$_whisperBase/preprocessor_config.json',
           bytes: 339,
+          sha256: null,
         ),
         ModelFile(
           name: 'tokenizer.json',
           url: '$_whisperBase/tokenizer.json',
-          bytes: 2480000,
+          bytes: 2480466,
+          sha256: null,
         ),
         ModelFile(
           name: 'vocab.json',
           url: '$_whisperBase/vocab.json',
-          bytes: 1040000,
+          bytes: 1036584,
+          sha256: null,
         ),
         ModelFile(
           name: 'merges.txt',
           url: '$_whisperBase/merges.txt',
-          bytes: 494000,
+          bytes: 493869,
+          sha256: null,
         ),
       ],
     ),
@@ -783,39 +765,45 @@ class ModelManagerRepository {
         ModelFile(
           name: 'config.json',
           url: '$_opusBase/config.json',
-          bytes: 1390,
+          bytes: 1389,
+          sha256: null,
         ),
         ModelFile(
           name: 'generation_config.json',
           url: '$_opusBase/generation_config.json',
           bytes: 293,
+          sha256: null,
         ),
         ModelFile(
           name: 'source.spm',
           url: '$_opusBase/source.spm',
-          bytes: 809000,
+          bytes: 808612,
+          sha256: null,
         ),
         ModelFile(
           name: 'target.spm',
           url: '$_opusBase/target.spm',
-          bytes: 756000,
+          bytes: 756198,
+          sha256: null,
         ),
         ModelFile(
           name: 'vocab.json',
           url: '$_opusBase/vocab.json',
-          bytes: 1300000,
+          bytes: 1299764,
+          sha256: null,
         ),
         ModelFile(
           name: 'tokenizer.json',
           url: '$_opusBase/tokenizer.json',
-          bytes: 5160000,
+          bytes: 5163544,
+          sha256: null,
         ),
       ],
     ),
     AiModelManifest(
       id: 'tts_piper_vi_female',
       type: AiModelType.tts,
-      version: '1.0.0',
+      version: '1.0.1',
       languages: ['vi'],
       files: [
         ModelFile(
@@ -828,7 +816,11 @@ class ModelManagerRepository {
         ModelFile(
           name: 'vi_VN-25hours_single-low.onnx.json',
           url: '$_piperBase/vi_VN-25hours_single-low.onnx.json',
-          bytes: 4180,
+          // Actual size is ~4176-4177 bytes (4.18 kB). Not a LFS file, so the
+          // exact size can't be confirmed; 0 skips the size check and the
+          // JSON is still validated via jsonDecode in _verify.
+          bytes: 0,
+          sha256: null,
         ),
       ],
     ),
@@ -897,7 +889,10 @@ class ModelManagerRepository {
     for (final f in manifest.files) {
       final file = File('${dir.path}/${f.name}');
       if (!await file.exists()) return false;
-      if (f.sha256 != null && await file.length() != f.bytes) return false;
+      if (f.bytes > 0 && await file.length() != f.bytes) return false;
+      if (f.sha256 != null) {
+        // Hash check is done only if sha256 is provided
+      }
     }
     return true;
   }
@@ -1029,13 +1024,14 @@ class ModelManagerRepository {
       throw ModelIntegrityException('${spec.name}: file rỗng');
     }
 
+    if (spec.bytes > 0 && length != spec.bytes) {
+      throw ModelIntegrityException(
+        '${spec.name}: sai kích thước ($length != ${spec.bytes})',
+      );
+    }
+
     final expectedHash = spec.sha256;
     if (expectedHash != null) {
-      if (length != spec.bytes) {
-        throw ModelIntegrityException(
-          '${spec.name}: sai kích thước ($length != ${spec.bytes})',
-        );
-      }
       final actual = await Sha256Util.computeFileHash(file);
       if (actual.toLowerCase() != expectedHash.toLowerCase()) {
         throw ModelIntegrityException('${spec.name}: sai SHA-256');
@@ -1079,7 +1075,6 @@ final modelManagerRepositoryProvider = Provider<ModelManagerRepository>((ref) {
   ref.onDispose(repo.dispose);
   return repo;
 });
-
 ```
 
 ## lib/features/settings/domain/model_manifest.dart
@@ -2507,7 +2502,13 @@ class SubtitleRepositoryImpl
       if (track.uri.isScheme('file')) {
         body = await File(track.uri.toFilePath()).readAsString();
       } else {
-        final response = await _dio.get<String>(track.uri.toString());
+        final response = await _dio.get<String>(
+          track.uri.toString(),
+          options: Options(
+            responseType: ResponseType.plain,
+            headers: track.requestContext?.headers,
+          ),
+        );
         body = response.data ?? '';
       }
 
@@ -2562,6 +2563,7 @@ class SubtitleRepositoryImpl
     return const [];
   }
 }
+
 
 ```
 

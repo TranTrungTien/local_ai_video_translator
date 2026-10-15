@@ -38,6 +38,7 @@ class LocalVadEngine implements VoiceActivityDetector {
     this.minSpeechDuration = const Duration(milliseconds: 250),
     this.maxMergeGap = const Duration(milliseconds: 300),
     this.preRollDuration = const Duration(milliseconds: 200),
+    this.maxSpeechDuration = const Duration(seconds: 29),
   });
 
   final ModelManagerRepository _modelRepository;
@@ -46,14 +47,18 @@ class LocalVadEngine implements VoiceActivityDetector {
   final Duration minSpeechDuration;
   final Duration maxMergeGap;
   final Duration preRollDuration;
+  final Duration maxSpeechDuration;
 
   static const String modelId = 'vad_silero';
+  static const int _contextSize = 64;
+  static const int _windowSize = 512;
+  static const int _stateSize = 128; // Updated for Silero VAD v5+
 
   OrtSession? _session;
-  final Float32List _state = Float32List(2 * 1 * 128);
-
-  // Tái sử dụng bộ đệm 512 float32 để giảm thiểu Garbage Collection
-  final Float32List _windowFloatBuffer = Float32List(512);
+  bool _onnxBroken = false;
+  final Float32List _state = Float32List(2 * 1 * _stateSize);
+  final Float32List _context = Float32List(_contextSize);
+  final Float32List _windowFloatBuffer = Float32List(_contextSize + _windowSize);
 
   @override
   bool get installed => true;
@@ -66,7 +71,7 @@ class LocalVadEngine implements VoiceActivityDetector {
       'silero_vad.onnx',
     );
     if (!await modelFile.exists()) {
-      return;
+      throw ModelDownloadException('Silero VAD model missing. Please download it in settings.');
     }
 
     final sessionOptions = OrtSessionOptions();
@@ -173,6 +178,17 @@ class LocalVadEngine implements VoiceActivityDetector {
           active.end = currentPts + windowDuration;
 
           preRollBuffer.clear();
+
+          // Enforce max duration for Whisper (30s limit)
+          if (active.end - active.start >= maxSpeechDuration) {
+            yield SpeechSegment(
+              start: active.start,
+              end: active.end,
+              chunks: List.unmodifiable(active.chunks),
+            );
+            active = null;
+            _resetState();
+          }
         } else {
           if (active != null) {
             pendingGap ??= _RawSpeechRange(
@@ -217,60 +233,73 @@ class LocalVadEngine implements VoiceActivityDetector {
 
   void _resetState() {
     _state.fillRange(0, _state.length, 0.0);
+    _context.fillRange(0, _context.length, 0.0);
   }
 
   Future<bool> _isSpeechData(Uint8List bytes, int sampleRate) async {
     final session = _session;
-    if (session == null) return _isSpeechEnergy(bytes);
+    if (session == null || _onnxBroken) return _isSpeechEnergy(bytes);
+
+    OrtValue? inputOrt;
+    OrtValue? srOrt;
+    OrtValue? stateOrt;
+    Map<String, OrtValue>? outputs;
 
     try {
-      _fillPcm16ToFloat32Buffer(bytes, _windowFloatBuffer);
+      // Input = Context (64) + Window (512) = 576 samples
+      _windowFloatBuffer.setRange(0, _contextSize, _context);
+      _fillPcm16ToFloat32Buffer(bytes, _windowFloatBuffer, offset: _contextSize);
 
-      final inputOrt = await OrtValue.fromList(_windowFloatBuffer, [
-        1,
-        _windowFloatBuffer.length,
-      ]);
-      final srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), [
-        1,
-      ]);
-      final stateOrt = await OrtValue.fromList(_state, [2, 1, 128]);
+      inputOrt = await OrtValue.fromList(_windowFloatBuffer, [1, _windowFloatBuffer.length]);
+      srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), []); // Scalar shape []
+      stateOrt = await OrtValue.fromList(_state, [2, 1, _stateSize]);
 
       final inputs = {'input': inputOrt, 'sr': srOrt, 'state': stateOrt};
-
-      final outputs = await session.run(inputs);
+      outputs = await session.run(inputs);
 
       final outputVal = await outputs['output']?.asList();
       final stateVal = await outputs['state']?.asList();
 
       if (outputVal != null && stateVal != null) {
-        final probability = outputVal[0][0] as double;
+        final probability = (outputVal[0] as List)[0] as double;
         _updateState(_state, stateVal as List<List<List<double>>>);
 
-        await inputOrt.dispose();
-        await srOrt.dispose();
-        await stateOrt.dispose();
-        await outputs['output']?.dispose();
-        await outputs['state']?.dispose();
+        // Update context with the last 64 samples of the current window
+        final int16Data = bytes.buffer.asInt16List();
+        const double scale = 1.0 / 32768.0;
+        for (int i = 0; i < _contextSize; i++) {
+          _context[i] = int16Data[int16Data.length - _contextSize + i] * scale;
+        }
 
         return probability >= threshold;
       }
     } catch (e, st) {
+      _onnxBroken = true;
       _diagnostics.log(
         'VAD_ENGINE',
-        'Inference error: $e',
+        'Inference error (falling back to energy VAD): $e',
         level: LogLevel.error,
-        details: st,
+        details: st.toString(),
       );
+    } finally {
+      await inputOrt?.dispose();
+      await srOrt?.dispose();
+      await stateOrt?.dispose();
+      if (outputs != null) {
+        for (var v in outputs.values) {
+          await v.dispose();
+        }
+      }
     }
     return _isSpeechEnergy(bytes);
   }
 
-  void _fillPcm16ToFloat32Buffer(Uint8List bytes, Float32List targetBuffer) {
+  void _fillPcm16ToFloat32Buffer(Uint8List bytes, Float32List targetBuffer, {int offset = 0}) {
     final int16Data = bytes.buffer.asInt16List();
     const double scale = 1.0 / 32768.0;
-    final len = min(int16Data.length, targetBuffer.length);
+    final len = min(int16Data.length, targetBuffer.length - offset);
     for (var i = 0; i < len; i++) {
-      targetBuffer[i] = int16Data[i] * scale;
+      targetBuffer[offset + i] = int16Data[i] * scale;
     }
   }
 

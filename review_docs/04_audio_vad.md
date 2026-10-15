@@ -274,6 +274,7 @@ import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit_config.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';
+import '../../../core/utils/cancellation_token.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import 'pcm_audio_extractor.dart';
@@ -314,31 +315,69 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
     _diagnostics.log('FFmpegAudio', 'Starting extraction: ${source.uri}');
 
     final startMs = startPosition?.inMilliseconds ?? 0;
-    final ssArg = startMs > 0 ? '-ss ${startMs / 1000.0}' : '';
-
-    String headersArg = '';
-    if (source.requestContext.headers.isNotEmpty) {
-      final headersString = source.requestContext.headers.entries
-          .map((e) => '${e.key}: ${e.value}')
-          .join('\r\n');
-      headersArg = '-headers "$headersString"';
-    }
-
     final inputPath = source.uri.isScheme('file')
         ? source.uri.toFilePath()
         : source.uri.toString();
 
-    // Thêm rw_timeout 5000000 (5 giây) để tránh đơ mạng
-    final ffmpegCommand =
-        '-y -nostdin -hide_banner '
-        '-rw_timeout 5000000 '
-        '$headersArg $ssArg -i "$inputPath" -vn -ac $channels -ar $sampleRate -f s16le "$pipePath"';
+    final List<String> args = [
+      '-y',
+      '-nostdin',
+      '-hide_banner',
+      '-rw_timeout',
+      '5000000',
+    ];
 
-    _diagnostics.log('FFmpegAudio', 'FFmpeg Command: $ffmpegCommand');
+    if (source.requestContext.headers.isNotEmpty &&
+        !source.uri.isScheme('file')) {
+      // Tách User-Agent vì một số build FFmpeg ưu tiên tham số riêng cho nó
+      final userAgent = source.requestContext.headers['User-Agent'] ??
+          source.requestContext.headers['user-agent'];
+      if (userAgent != null) {
+        args.addAll(['-user_agent', userAgent]);
+      }
+
+      final headersString = source.requestContext.headers.entries
+              .where((e) => e.key.toLowerCase() != 'user-agent')
+              .map((e) => '${e.key}: ${e.value}')
+              .join('\r\n') +
+          '\r\n\r\n'; // QUAN TRỌNG: FFmpeg yêu cầu kết thúc bằng 2 cặp CRLF để đánh dấu hết header
+
+      if (headersString.trim().isNotEmpty) {
+        args.addAll(['-headers', headersString]);
+      }
+    }
+
+    if (startMs > 0) {
+      args.addAll(['-ss', (startMs / 1000.0).toString()]);
+    }
+
+    args.addAll(['-i', inputPath]);
+    args.addAll([
+      '-vn',
+      '-ac',
+      '$channels',
+      '-ar',
+      '$sampleRate',
+      '-f',
+      's16le',
+      pipePath,
+    ]);
+
+    // Log command without sensitive headers
+    final safeArgs = List<String>.from(args);
+    for (int i = 0; i < safeArgs.length - 1; i++) {
+      if (safeArgs[i] == '-headers') {
+        safeArgs[i + 1] = '***';
+      }
+    }
+    _diagnostics.log(
+      'FFmpegAudio',
+      'FFmpeg Command: ffmpeg ${safeArgs.join(' ')}',
+    );
 
     final file = File(pipePath);
 
-    final sessionFuture = FFmpegKit.executeAsync(ffmpegCommand, (
+    final sessionFuture = FFmpegKit.executeWithArgumentsAsync(args, (
       session,
     ) async {
       final returnCode = await session.getReturnCode();
@@ -357,26 +396,25 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
     });
 
     final session = await sessionFuture;
-    cancellationToken?.addListener(() {
-      FFmpegKit.cancel(session.getSessionId());
-      FFmpegKitConfig.closeFFmpegPipe(pipePath);
-    });
+    final sessionId = session.getSessionId();
+
+    void cancelListener() {
+      FFmpegKit.cancel(sessionId);
+    }
+
+    cancellationToken?.addListener(cancelListener);
 
     try {
       cancellationToken?.throwIfCancelled();
       int retry = 0;
       while (!await file.exists() && retry < 30) {
         await Future.delayed(const Duration(milliseconds: 200));
+        cancellationToken?.throwIfCancelled();
         retry++;
       }
 
       if (!await file.exists()) {
-        _diagnostics.log(
-          'FFmpegAudio',
-          'Pipe file not found: $pipePath',
-          level: LogLevel.error,
-        );
-        return;
+        throw Exception('Pipe file not found: $pipePath');
       }
 
       _diagnostics.log('FFmpegAudio', 'Pipe ready, opening stream...');
@@ -386,7 +424,7 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
       int totalBytesRead = 0;
 
       await for (final data in inputStream.timeout(
-        const Duration(seconds: 5),
+        const Duration(seconds: 10), // Tăng timeout cho mạng chậm
         onTimeout: (sink) {
           _diagnostics.log(
             'FFmpegAudio',
@@ -396,6 +434,7 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
           sink.close();
         },
       )) {
+        cancellationToken?.throwIfCancelled();
         totalBytesRead += data.length;
         pendingBuffer.addAll(data);
 
@@ -422,7 +461,7 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
         'Stream closed. Total bytes: $totalBytesRead',
       );
 
-      if (pendingBuffer.isNotEmpty) {
+      if (pendingBuffer.isNotEmpty && !cancellationToken!.isCancelled) {
         yield PcmChunk(
           pts: currentPts,
           sampleRate: sampleRate,
@@ -434,17 +473,23 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
         );
       }
     } catch (e) {
-      _diagnostics.log(
-        'FFmpegAudio',
-        'Stream read error: $e',
-        level: LogLevel.error,
-      );
+      if (e is OperationCancelledException) {
+        _diagnostics.log('FFmpegAudio', 'Extraction cancelled');
+      } else {
+        _diagnostics.log(
+          'FFmpegAudio',
+          'Stream read error: $e',
+          level: LogLevel.error,
+        );
+      }
     } finally {
-      // Hủy tiến trình FFmpeg Native C++ ngay khi dừng
-      await FFmpegKit.cancel(session.getSessionId());
+      cancellationToken?.removeListener(cancelListener);
+      // Đảm bảo dừng FFmpeg và giải phóng pipe
+      await FFmpegKit.cancel(sessionId);
+      await FFmpegKitConfig.closeFFmpegPipe(pipePath);
       _diagnostics.log(
         'FFmpegAudio',
-        'Cleaned up FFmpeg session ${session.getSessionId()}',
+        'Cleaned up FFmpeg session $sessionId and pipe $pipePath',
       );
     }
   }
@@ -459,6 +504,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';
+import '../../../core/utils/cancellation_token.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import 'ffmpeg_audio_extractor.dart';
@@ -689,7 +735,7 @@ class LocalVadEngine implements VoiceActivityDetector {
   @override
   Stream<SpeechSegment> detectSpeech(
     Stream<PcmChunk> audioStream, {
-    void Function(Duration pts)? onProgress,
+    void Function(Duration pts, Duration? activeSpeechStart)? onProgress,
   }) async* {
     await _ensureInitialized();
     _resetState();
@@ -756,7 +802,7 @@ class LocalVadEngine implements VoiceActivityDetector {
         );
 
         if (onProgress != null) {
-          onProgress(currentPts + windowDuration, active?.start);
+          onProgress.call(currentPts + windowDuration, active?.start);
         }
 
         final isSpeech = await _isSpeechData(

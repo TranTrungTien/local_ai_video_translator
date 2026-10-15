@@ -9,65 +9,21 @@ import 'ai_scheduler_controller.dart';
 class DubbingController extends StateNotifier<bool> {
   DubbingController({required DubbingRepository repository, required this.ref})
     : _repository = repository,
-      super(true) {
+      super(false) { // Changed default from true to false (Sub-only by default)
     _init();
   }
 
   final DubbingRepository _repository;
   final Ref ref;
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  StreamSubscription? _activeIdSub;
 
   void _init() {
-    // Cấu hình AudioContext để lồng tiếng (TTS) tự động duck (giảm âm lượng) video nền
-    // thay vì chiếm quyền ưu tiên hoàn toàn hoặc tạm dừng media chính.
-    _audioPlayer.setAudioContext(
-      AudioContext(
-        android: AudioContextAndroid(
-          contentType: AndroidContentType.speech,
-          usageType: AndroidUsageType.assistanceSonification,
-          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
-        ),
-        iOS: AudioContextIOS(
-          category: AVAudioSessionCategory.playback,
-          options: {
-            AVAudioSessionOptions.duckOthers,
-            AVAudioSessionOptions.interruptSpokenAudioAndMixWithOthers,
-          },
-        ),
-      ),
-    );
-
-    _activeIdSub = _repository.activeIdStream.listen((id) async {
-      if (!state) return;
-
-      if (id == null) {
-        await _audioPlayer.stop();
-        return;
-      }
-
-      final segment = _repository.getSegmentAt(
-        ref.read(aiSchedulerProvider).playbackPosition,
-      );
-      if (segment != null) {
-        await _playSegmentInMemory(segment.generatedAudio);
-      }
-    });
+    // Controller này hiện tại chỉ đóng vai trò toggle trạng thái Dubbing
+    // Việc phát âm thanh thực tế đã được chuyển qua DubbingPlayerService
+    // để đồng bộ hóa tốt hơn với Native Media Session.
   }
 
-  /// Phát trực tiếp dữ liệu âm thanh từ RAM bằng BytesSource, triệt tiêu I/O đĩa
-  Future<void> _playSegmentInMemory(List<int> audioData) async {
-    try {
-      final wavData = Uint8List.fromList(_addWavHeader(audioData, 16000));
-      await _audioPlayer.play(
-        BytesSource(wavData),
-        mode: PlayerMode.lowLatency,
-      );
-    } catch (e) {
-      ref
-          .read(diagnosticsServiceProvider)
-          .log('Dubbing', 'InMemory Play error: $e', level: LogLevel.error);
-    }
+  void _playSegmentInMemory(List<int> audioData) {
+    // Deprecated: logic moved to DubbingPlayerService
   }
 
   List<int> _addWavHeader(List<int> pcmData, int sampleRate) {
@@ -109,13 +65,10 @@ class DubbingController extends StateNotifier<bool> {
 
   void toggleDubbing() {
     state = !state;
-    if (!state) _audioPlayer.stop();
   }
 
   @override
   void dispose() {
-    _activeIdSub?.cancel();
-    _audioPlayer.dispose();
     super.dispose();
   }
 }

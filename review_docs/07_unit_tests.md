@@ -1,6 +1,6 @@
 # Review Module: 07. Bộ Unit Tests Toàn Dự Án
 
-## Included Files (16 files)
+## Included Files (17 files)
 
 ```text
 test/ai_cache_test.dart
@@ -12,6 +12,7 @@ test/dub_pipeline_test.dart
 test/media_session_test.dart
 test/media_url_test.dart
 test/model_manager_test.dart
+test/shared_input_parser_test.dart
 test/source_compatibility_test.dart
 test/stt_pipeline_test.dart
 test/subtitle_parser_test.dart
@@ -376,49 +377,67 @@ void main() {
             bytes: silentBytes,
           ),
           PcmChunk(
+            pts: const Duration(milliseconds: 100),
+            sampleRate: 16000,
+            channels: 1,
+            bytes: silentBytes,
+          ),
+          PcmChunk(
+            pts: const Duration(milliseconds: 200),
+            sampleRate: 16000,
+            channels: 1,
+            bytes: speechBytes,
+          ),
+          PcmChunk(
+            pts: const Duration(milliseconds: 300),
+            sampleRate: 16000,
+            channels: 1,
+            bytes: speechBytes,
+          ),
+          PcmChunk(
+            pts: const Duration(milliseconds: 400),
+            sampleRate: 16000,
+            channels: 1,
+            bytes: speechBytes,
+          ),
+          PcmChunk(
             pts: const Duration(milliseconds: 500),
             sampleRate: 16000,
             channels: 1,
-            bytes: silentBytes,
+            bytes: speechBytes,
           ),
           PcmChunk(
-            pts: const Duration(seconds: 1),
+            pts: const Duration(milliseconds: 600),
             sampleRate: 16000,
             channels: 1,
             bytes: speechBytes,
           ),
           PcmChunk(
-            pts: const Duration(milliseconds: 1500),
-            sampleRate: 16000,
-            channels: 1,
-            bytes: speechBytes,
-          ),
-          PcmChunk(
-            pts: const Duration(seconds: 2),
-            sampleRate: 16000,
-            channels: 1,
-            bytes: speechBytes,
-          ),
-          PcmChunk(
-            pts: const Duration(milliseconds: 2500),
+            pts: const Duration(milliseconds: 700),
             sampleRate: 16000,
             channels: 1,
             bytes: silentBytes,
-          ), // small gap
+          ), // small gap (100ms)
           PcmChunk(
-            pts: const Duration(seconds: 3),
+            pts: const Duration(milliseconds: 800),
             sampleRate: 16000,
             channels: 1,
             bytes: speechBytes,
           ),
           PcmChunk(
-            pts: const Duration(milliseconds: 3500),
+            pts: const Duration(milliseconds: 900),
             sampleRate: 16000,
             channels: 1,
             bytes: speechBytes,
           ),
           PcmChunk(
-            pts: const Duration(seconds: 4),
+            pts: const Duration(milliseconds: 1000),
+            sampleRate: 16000,
+            channels: 1,
+            bytes: speechBytes,
+          ),
+          PcmChunk(
+            pts: const Duration(milliseconds: 1100),
             sampleRate: 16000,
             channels: 1,
             bytes: silentBytes,
@@ -731,6 +750,69 @@ void main() {
     expect(translation.id, contains('opus'));
     expect(tts.id, contains('piper'));
     expect(vad.id, contains('silero'));
+  });
+}
+
+```
+
+## test/shared_input_parser_test.dart
+```dart:test/shared_input_parser_test.dart
+import 'package:flutter_test/flutter_test.dart';
+import 'package:local_ai_video_translator/core/utils/shared_input_parser.dart';
+
+void main() {
+  group('SharedInputParser', () {
+    test('extracts clean URL from text', () {
+      expect(
+        SharedInputParser.extract('Check this out: https://example.com/video.mp4'),
+        'https://example.com/video.mp4',
+      );
+    });
+
+    test('trims trailing punctuation from URL', () {
+      expect(
+        SharedInputParser.extract('Watch here https://example.com/video.mp4!!!'),
+        'https://example.com/video.mp4',
+      );
+      expect(
+        SharedInputParser.extract('(https://example.com/video.mp4)'),
+        'https://example.com/video.mp4',
+      );
+    });
+
+    test('extracts local file paths', () {
+      expect(
+        SharedInputParser.extract('/storage/emulated/0/Download/video.mp4'),
+        '/storage/emulated/0/Download/video.mp4',
+      );
+      expect(
+        SharedInputParser.extract('file:///data/user/0/com.app/video.mkv'),
+        'file:///data/user/0/com.app/video.mkv',
+      );
+      expect(
+        SharedInputParser.extract('content://media/external/video/media/123'),
+        'content://media/external/video/media/123',
+      );
+    });
+
+    test('handles raw domains with fallback to https', () {
+      expect(SharedInputParser.extract('youtube.com/watch?v=123'), 'https://youtube.com/watch?v=123');
+      expect(SharedInputParser.extract('www.example.com'), 'https://www.example.com');
+    });
+
+    test('rejects invalid or unsafe inputs', () {
+      expect(SharedInputParser.extract('just some random text'), isNull);
+      expect(SharedInputParser.extract('ftp://unsafe.site/file'), isNull);
+      expect(SharedInputParser.extract(''), isNull);
+      expect(SharedInputParser.extract('  '), isNull);
+    });
+
+    test('strict domain validation in fallback', () {
+      // Should not fallback if there are spaces
+      expect(SharedInputParser.extract('example .com'), isNull);
+      // Should not fallback if it's just a string without dots
+      expect(SharedInputParser.extract('localhost'), isNull);
+    });
   });
 }
 
