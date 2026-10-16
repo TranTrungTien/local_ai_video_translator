@@ -425,6 +425,10 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
           cancellationToken: token,
         );
 
+        if (sttSegments.isNotEmpty) {
+          _diagnostics.log('AIScheduler', 'STT Result: "${sttSegments.map((s) => s.text).join(" ")}"');
+        }
+
         final translated = sttSegments.isEmpty
             ? const <TimedTextSegment>[]
             : await _translationEngine.translate(
@@ -432,6 +436,10 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
                 targetLanguage: AppConstants.targetLanguage,
                 cancellationToken: token,
               );
+
+        if (translated.isNotEmpty) {
+          _diagnostics.log('AIScheduler', 'Translation Result: "${translated.map((s) => s.text).join(" ")}"');
+        }
 
         _timelineBuffer.addSegments(translated, metadata: speech.start);
         // Dubbing is temporarily disabled as per request, only subtitles are processed.
@@ -484,50 +492,21 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     _dubbingRepository.prune(pts);
 
     final activeSeg = _timelineBuffer.segmentAt(pts);
+    if (activeSeg != null) {
+      _diagnostics.log('AIScheduler', 'Active Segment at ${pts.inMilliseconds}ms: "${activeSeg.text}"');
+    }
+
     final dubSeg = _dubbingRepository.getSegmentAt(pts);
     if (dubSeg != null) {
       _dubbingRepository.markAsActive(dubSeg.id);
     }
 
-    final readyUntil = _timelineBuffer.subtitleReadyUntil;
-    final dubReadyUntil = _dubbingRepository.dubReadyUntil;
-
-    final snapshot = AiBufferSnapshot(
-      playbackPosition: pts,
-      subtitleReadyUntil: readyUntil,
-      dubReadyUntil: dubReadyUntil,
-    );
-
-    final decision = _playbackGate.evaluate(
-      snapshot: snapshot,
-      playbackRate: state.playbackRate,
-      isUserPaused: false,
-    );
-
-    final ahead = readyUntil - pts;
-    final resumeAt = _policy.dynamicStartupThreshold(
-      deviceProfile: _deviceProfile,
-      sttRtf: PerformanceMonitor.instance.current.sttRtf,
-      translationThroughput: 100,
-      playbackRate: state.playbackRate,
-    );
-
-    if (!_gatePaused && ahead <= Duration.zero) {
-      _gatePaused = true;
-      unawaited(_ref.read(mediaSessionControllerProvider.notifier).pause());
-    } else if (_gatePaused && ahead >= resumeAt) {
-      _gatePaused = false;
-      unawaited(_ref.read(mediaSessionControllerProvider.notifier).play());
-    }
-
     state = state.copyWith(
       playbackPosition: pts,
-      subtitleReadyUntil: readyUntil,
-      dubReadyUntil: dubReadyUntil,
-      workMode: decision.workMode,
       activeSegment: activeSeg,
-      isBufferingForAi: _gatePaused,
     );
+
+    _updateBufferState();
   }
 
   void handleSeek(Duration newPts) {
@@ -564,6 +543,24 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       dubReadyUntil: dubReadyUntil,
     );
 
+    final ahead = readyUntil - state.playbackPosition;
+    final resumeAt = _policy.dynamicStartupThreshold(
+      deviceProfile: _deviceProfile,
+      sttRtf: PerformanceMonitor.instance.current.sttRtf,
+      translationThroughput: 100,
+      playbackRate: state.playbackRate,
+    );
+
+    if (!_gatePaused && ahead <= Duration.zero && state.playbackPosition > Duration.zero) {
+      _gatePaused = true;
+      _diagnostics.log('AIScheduler', 'Gate: Pausing video (buffer empty)');
+      unawaited(_ref.read(mediaSessionControllerProvider.notifier).pause());
+    } else if (_gatePaused && ahead >= resumeAt) {
+      _gatePaused = false;
+      _diagnostics.log('AIScheduler', 'Gate: Resuming video (buffer ready: ${ahead.inSeconds}s)');
+      unawaited(_ref.read(mediaSessionControllerProvider.notifier).play());
+    }
+
     final canStart = _policy.canStart(
       snapshot,
       deviceProfile: _deviceProfile,
@@ -574,13 +571,15 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
         ? AiWorkMode.blocked
         : _policy.modeFor(snapshot, playbackRate: state.playbackRate);
 
+    // Also refresh active segment in case we just added it while paused
+    final activeSeg = _timelineBuffer.segmentAt(state.playbackPosition);
+
     state = state.copyWith(
       subtitleReadyUntil: readyUntil,
       dubReadyUntil: dubReadyUntil,
       workMode: mode,
-      isBufferingForAi:
-          !canStart &&
-          (state.playbackPosition == Duration.zero || state.isBufferingForAi),
+      activeSegment: activeSeg,
+      isBufferingForAi: _gatePaused || (!canStart && state.playbackPosition == Duration.zero),
     );
   }
 

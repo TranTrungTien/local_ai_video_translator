@@ -48,6 +48,10 @@ class TimelineSubtitleBuffer {
   }
 
   void addSegments(List<TimedTextSegment> newSegments, {Duration? metadata}) {
+    print('DEBUG_SUB: Adding ${newSegments.length} segments. metadata=$metadata');
+    for (var s in newSegments) {
+      print('DEBUG_SUB:   - [${s.start.inMilliseconds}ms - ${s.end.inMilliseconds}ms]: "${s.text}"');
+    }
     if (metadata != null) {
       _pendingSegments.removeWhere((p) => p.start == metadata);
     }
@@ -55,6 +59,7 @@ class TimelineSubtitleBuffer {
     _segments.sort((a, b) => a.start.compareTo(b.start));
     _deduplicate();
     _updateWatermark();
+    print('DEBUG_SUB: Watermark updated to ${_watermark.inMilliseconds}ms. Total segments: ${_segments.length}');
   }
 
   void _deduplicate() {

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
@@ -40,6 +42,18 @@ class LocalTranslationEngine implements TranslationEngine {
 
   Completer<void>? _activeInference;
 
+  // Marian: decoder_start_token_id == pad_token_id, eos == 0.
+  // Giá trị mặc định dưới đây chỉ là fallback; ưu tiên đọc từ config.json
+  // đi kèm model (xem _loadSpecialTokens) và kiểm tra lại qua log.
+  int _startToken = 59513;
+  int _eosToken = 0;
+
+  /// Nhận diện exception do huỷ chủ động, tránh biến nó thành lỗi model.
+  /// Đổi lại thành `e is <TênClass>` nếu biết chính xác class trong
+  /// cancellation_token.dart.
+  static bool _isCancellation(Object e) =>
+      e.runtimeType.toString().toLowerCase().contains('cancel');
+
   TranslationMetrics get metrics => _metrics;
   TranslationCache get cache => _cache;
 
@@ -64,12 +78,15 @@ class LocalTranslationEngine implements TranslationEngine {
       throw ModelDownloadException('Opus-MT models (encoder/decoder) missing. Please download them in settings.');
     }
 
-    // Try to load accompanying vocab if exists
     final dir = await _modelRepository.getModelDir(modelId);
     final vocabFile = File('${dir.path}/vocab.json');
-    if (await vocabFile.exists()) {
-      _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
+    if (!await vocabFile.exists()) {
+      // Không có tokenizer thì không dịch được; báo rõ thay vì tạo lại session mỗi lần gọi.
+      throw ModelContractException('Opus-MT vocab.json missing. Please re-download the translation model.');
     }
+    _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
+
+    await _loadSpecialTokens(dir);
 
     final sessionOptions = OrtSessionOptions();
     _encoderSession = await OnnxRuntime().createSession(
@@ -80,6 +97,27 @@ class LocalTranslationEngine implements TranslationEngine {
       decoderFile.path,
       options: sessionOptions,
     );
+
+    _diagnostics.log('TRANSLATION_ENGINE', 'Opus-MT initialized (start=$_startToken, eos=$_eosToken)');
+    _diagnostics.log('TRANSLATION_ENGINE', 'Decoder Inputs: ${_decoderSession?.inputNames}');
+    _diagnostics.log('TRANSLATION_ENGINE', 'Decoder Outputs: ${_decoderSession?.outputNames}');
+  }
+
+  /// Đọc decoder_start_token_id / eos_token_id từ config.json nếu có.
+  Future<void> _loadSpecialTokens(Directory dir) async {
+    try {
+      final configFile = File('${dir.path}/config.json');
+      if (!await configFile.exists()) return;
+      final json = jsonDecode(await configFile.readAsString());
+      if (json is! Map) return;
+
+      final start = json['decoder_start_token_id'] ?? json['pad_token_id'];
+      final eos = json['eos_token_id'];
+      if (start is int) _startToken = start;
+      if (eos is int) _eosToken = eos;
+    } catch (e) {
+      _diagnostics.log('TRANSLATION_ENGINE', 'Could not read config.json, using defaults: $e', level: LogLevel.warning);
+    }
   }
 
   Future<bool> isModelReady() async {
@@ -106,70 +144,69 @@ class LocalTranslationEngine implements TranslationEngine {
       token.throwIfCancelled();
 
       final stopwatch = Stopwatch()..start();
-      // ... rest of logic
-    final translatedSegments = <TimedTextSegment>[];
+      final translatedSegments = <TimedTextSegment>[];
 
-    // Batching segments for latency/memory balance
-    const batchSize = 6;
-    for (var i = 0; i < segments.length; i += batchSize) {
-      token.throwIfCancelled();
-      final batch = segments.skip(i).take(batchSize).toList();
-
-      for (final seg in batch) {
+      // Batching segments for latency/memory balance
+      const batchSize = 6;
+      for (var i = 0; i < segments.length; i += batchSize) {
         token.throwIfCancelled();
-        _contextHistory.add(seg);
-        if (_contextHistory.length > 5) _contextHistory.removeAt(0);
+        final batch = segments.skip(i).take(batchSize).toList();
 
-        String translatedText;
-        final cached = _cache.get(seg.text);
-        if (cached != null) {
-          translatedText = cached;
-        } else {
-          translatedText = await _runInference(
-            seg.text,
-            targetLanguage,
-            _contextHistory,
-            token,
-          );
+        for (final seg in batch) {
           token.throwIfCancelled();
-          translatedText = _compressor.compress(translatedText);
-          _cache.put(seg.text, translatedText);
+          _contextHistory.add(seg);
+          if (_contextHistory.length > 5) _contextHistory.removeAt(0);
+
+          String translatedText;
+          final cached = _cache.get(seg.text);
+          if (cached != null) {
+            translatedText = cached;
+          } else {
+            translatedText = await _runInference(
+              seg.text,
+              targetLanguage,
+              _contextHistory,
+              token,
+            );
+            token.throwIfCancelled();
+            translatedText = _compressor.compress(translatedText);
+            _cache.put(seg.text, translatedText);
+          }
+
+          translatedSegments.add(
+            TimedTextSegment(
+              start: seg.start,
+              end: seg.end,
+              text: translatedText,
+              language: targetLanguage,
+            ),
+          );
         }
-
-        translatedSegments.add(
-          TimedTextSegment(
-            start: seg.start,
-            end: seg.end,
-            text: translatedText,
-            language: targetLanguage,
-          ),
-        );
       }
-    }
 
-    stopwatch.stop();
+      stopwatch.stop();
 
-    // Update metrics
-    final totalChars = translatedSegments.fold<int>(
-      0,
-      (sum, s) => sum + s.text.length,
-    );
-    final secs = stopwatch.elapsedMilliseconds > 0
-        ? stopwatch.elapsedMilliseconds / 1000.0
-        : 0.001;
-    final charsPerSec = totalChars / secs;
+      // Update metrics
+      final totalChars = translatedSegments.fold<int>(
+        0,
+        (sum, s) => sum + s.text.length,
+      );
+      final secs = stopwatch.elapsedMilliseconds > 0
+          ? stopwatch.elapsedMilliseconds / 1000.0
+          : 0.001;
+      final charsPerSec = totalChars / secs;
 
-    PerformanceMonitor.instance.updateTranslationThroughput(charsPerSec);
+      PerformanceMonitor.instance.updateTranslationThroughput(charsPerSec);
 
-    _metrics.update(
-      _metrics.data.copyWith(
-        batchLatency: stopwatch.elapsed,
-        charactersPerSecond: charsPerSec,
-        queueSize: 0,
-      ),
-    );
+      _metrics.update(
+        _metrics.data.copyWith(
+          batchLatency: stopwatch.elapsed,
+          charactersPerSecond: charsPerSec,
+          queueSize: 0,
+        ),
+      );
 
-    return translatedSegments;
+      return translatedSegments;
     } finally {
       final lock = _activeInference;
       _activeInference = null;
@@ -190,21 +227,34 @@ class LocalTranslationEngine implements TranslationEngine {
     if (_encoderSession == null || _decoderSession == null) {
       throw ModelContractException('Opus-MT sessions not initialized');
     }
+    final tokenizer = _tokenizer;
+    if (tokenizer == null) {
+      throw ModelContractException('Opus-MT tokenizer not loaded');
+    }
+
+    OrtValue? inputOrt;
+    OrtValue? attentionMaskOrt;
+    Map<String, OrtValue>? encoderOutputs;
 
     try {
-      final inputIds = _tokenizer?.encode(clean) ?? clean.codeUnits;
+      final inputIds = List<int>.from(tokenizer.encode(clean));
+      // Marian luôn kết thúc câu nguồn bằng </s>. Chỉ thêm nếu tokenizer chưa thêm.
+      if (inputIds.isEmpty || inputIds.last != _eosToken) {
+        inputIds.add(_eosToken);
+      }
 
-      final inputOrt = await OrtValue.fromList(
+      inputOrt = await OrtValue.fromList(
         Int64List.fromList(inputIds),
         [1, inputIds.length],
       );
 
-      final attentionMaskOrt = await OrtValue.fromList(
+      attentionMaskOrt = await OrtValue.fromList(
         Int64List.fromList(List.filled(inputIds.length, 1)),
         [1, inputIds.length],
       );
 
-      final encoderOutputs = await _encoderSession!.run({
+      // Encoder có input attention_mask (khác với decoder).
+      encoderOutputs = await _encoderSession!.run({
         'input_ids': inputOrt,
         'attention_mask': attentionMaskOrt,
       });
@@ -217,106 +267,181 @@ class LocalTranslationEngine implements TranslationEngine {
       final decodedTokens = await _runDecoderLoop(
         encoderHiddenStates,
         attentionMaskOrt,
+        inputIds.length,
         token,
       );
 
-      await inputOrt.dispose();
-      await attentionMaskOrt.dispose();
-      for (var o in encoderOutputs.values) {
-        await o.dispose();
-      }
-
-      return _tokenizer?.decode(decodedTokens) ?? String.fromCharCodes(decodedTokens);
+      String resultText = tokenizer.decode(decodedTokens);
+      // Clean tokenizer artifacts (e.g. '▁' for spaces)
+      return resultText.replaceAll('▁', ' ').replaceAll(' ', ' ').trim();
     } catch (e, st) {
+      // Huỷ chủ động: ném lại nguyên vẹn, không log ERROR, không bọc thành lỗi model.
+      if (_isCancellation(e)) rethrow;
       _diagnostics.log('TRANSLATION_ENGINE', 'Inference error: $e', level: LogLevel.error, details: st);
       if (e is ModelContractException) rethrow;
       throw ModelContractException('Opus-MT inference failed: $e');
+    } finally {
+      await inputOrt?.dispose();
+      await attentionMaskOrt?.dispose();
+      if (encoderOutputs != null) {
+        for (var o in encoderOutputs.values) {
+          await o.dispose();
+        }
+      }
     }
   }
 
   Future<List<int>> _runDecoderLoop(
     OrtValue encoderHiddenStates,
     OrtValue encoderAttentionMask,
+    int srcLength,
     CancellationToken token,
   ) async {
-    final tokens = <int>[];
-    // Marian en-vi (Xenova) decoder start token
-    const int startToken = 59513;
-    const int eosToken = 0;
+    final inputNames = _decoderSession!.inputNames;
 
-    tokens.add(startToken);
-    const int maxNewTokens = 256;
+    final tokens = <int>[_startToken];
+    final maxNewTokens = math.min(256, srcLength * 3 + 16);
 
-    for (int i = 0; i < maxNewTokens; i++) {
-      token.throwIfCancelled();
-
-      final inputIdsOrt = await OrtValue.fromList(
-        Int64List.fromList(tokens),
-        [1, tokens.length],
+    // Số layer lấy từ tên input của decoder (Opus-MT: 6 layer).
+    int numLayers = 0;
+    while (inputNames.contains('past_key_values.$numLayers.decoder.key')) {
+      numLayers++;
+    }
+    if (numLayers == 0) {
+      throw ModelContractException(
+        'Opus-MT decoder: no past_key_values.N.decoder.key inputs found. Inputs: $inputNames',
       );
-
-      // Mask cho decoder (self-attention) có độ dài khớp với số lượng tokens hiện tại
-      final decoderMaskOrt = await OrtValue.fromList(
-        Int64List.fromList(List.filled(tokens.length, 1)),
-        [1, tokens.length],
-      );
-
-      final useCacheBranchOrt = await OrtValue.fromList([false], [1]);
-
-      final inputs = {
-        'input_ids': inputIdsOrt,
-        'encoder_hidden_states': encoderHiddenStates,
-        'attention_mask': decoderMaskOrt,               // Self-attention mask
-        'encoder_attention_mask': encoderAttentionMask, // Cross-attention mask
-        'use_cache_branch': useCacheBranchOrt,
-      };
-
-      final outputs = await _decoderSession!.run(inputs);
-      final logitsVal = outputs['logits'];
-
-      if (logitsVal == null) {
-        await inputIdsOrt.dispose();
-        await decoderMaskOrt.dispose();
-        await useCacheBranchOrt.dispose();
-        for (var o in outputs.values) {
-          await o.dispose();
-        }
-        break;
-      }
-
-      final logitsList = await logitsVal.asList();
-      final lastLogits = (logitsList[0] as List).last as List;
-
-      int nextToken = 0;
-      double maxLogit = -double.infinity;
-      for (int j = 0; j < lastLogits.length; j++) {
-        final val = (lastLogits[j] as num).toDouble();
-        if (val > maxLogit) {
-          maxLogit = val;
-          nextToken = j;
-        }
-      }
-
-      await inputIdsOrt.dispose();
-      await decoderMaskOrt.dispose();
-      await useCacheBranchOrt.dispose();
-      for (var o in outputs.values) {
-        await o.dispose();
-      }
-
-      if (nextToken == eosToken) break;
-      tokens.add(nextToken);
-
-      // Avoid infinite loops if model misbehaves
-      if (tokens.length > maxNewTokens) break;
     }
 
-    // Filter out special tokens and start token
-    return tokens.where((t) => t != startToken && t != eosToken).toList();
+    // head_dim = 64; numHeads = d_model / 64 (Opus-MT: d_model 512 -> 8 heads)
+    int numHeads = 8;
+    const int headDim = 64;
+    try {
+      numHeads = encoderHiddenStates.shape[2] ~/ headDim;
+    } catch (_) {
+      numHeads = 8;
+    }
+
+    // Decoder Marian KHÔNG có input `attention_mask`; chỉ có `encoder_attention_mask`.
+    final bool hasEncoderMask = inputNames.contains('encoder_attention_mask');
+
+    Map<String, OrtValue> pastKeyValues = {};
+
+    try {
+      // 1. KV Cache rỗng ban đầu (placeholders). Merged decoder luôn đòi đủ các input này.
+      for (int l = 0; l < numLayers; l++) {
+        final shape = [1, numHeads, 0, headDim];
+        for (final part in const ['decoder', 'encoder']) {
+          for (final kv in const ['key', 'value']) {
+            pastKeyValues['past_key_values.$l.$part.$kv'] =
+                await OrtValue.fromList(Float32List(0), shape);
+          }
+        }
+      }
+
+      for (int i = 0; i < maxNewTokens; i++) {
+        token.throwIfCancelled();
+
+        final bool useCache = i > 0;
+        final currentTokens = useCache ? [tokens.last] : tokens;
+
+        final inputIdsOrt = await OrtValue.fromList(
+          Int64List.fromList(currentTokens),
+          [1, currentTokens.length],
+        );
+        final useCacheBranchOrt = await OrtValue.fromList([useCache], [1]);
+
+        final inputs = <String, OrtValue>{
+          'input_ids': inputIdsOrt,
+          'encoder_hidden_states': encoderHiddenStates,
+          if (hasEncoderMask) 'encoder_attention_mask': encoderAttentionMask,
+          'use_cache_branch': useCacheBranchOrt,
+          ...pastKeyValues,
+        };
+
+        final outputs = await _decoderSession!.run(inputs);
+
+        try {
+          final logitsVal = outputs['logits'];
+          if (logitsVal == null) break;
+
+          final logitsList = await logitsVal.asList();
+          final lastLogits = (logitsList[0] as List).last as List;
+
+          int nextToken = -1;
+          double maxLogit = -double.infinity;
+          for (int j = 0; j < lastLogits.length; j++) {
+            // Marian không được sinh pad (= start token), theo bad_words_ids của generation config.
+            if (j == _startToken) continue;
+            final val = (lastLogits[j] as num).toDouble();
+            if (val > maxLogit) {
+              maxLogit = val;
+              nextToken = j;
+            }
+          }
+
+          if (nextToken == -1 || nextToken == _eosToken) break;
+          tokens.add(nextToken);
+
+          // Chống lặp: dừng nếu 4 token sinh ra gần nhất giống hệt nhau.
+          if (tokens.length - 1 >= 4) {
+            final t = tokens.sublist(tokens.length - 4);
+            if (t.every((x) => x == t.first)) {
+              tokens.removeRange(tokens.length - 3, tokens.length);
+              break;
+            }
+          }
+
+          // 2. Cập nhật KV Cache:
+          //    - decoder KV: thay bằng present mới ở mọi bước
+          //    - encoder KV: chỉ lấy ở bước đầu, các bước sau giữ nguyên
+          final old = pastKeyValues;
+          final next = <String, OrtValue>{};
+
+          for (int l = 0; l < numLayers; l++) {
+            for (final kv in const ['key', 'value']) {
+              final decIn = 'past_key_values.$l.decoder.$kv';
+              final decOut = 'present.$l.decoder.$kv';
+              if (outputs.containsKey(decOut)) {
+                next[decIn] = outputs.remove(decOut)!;
+                await old[decIn]?.dispose();
+              } else if (old.containsKey(decIn)) {
+                next[decIn] = old[decIn]!;
+              }
+
+              final encIn = 'past_key_values.$l.encoder.$kv';
+              final encOut = 'present.$l.encoder.$kv';
+              if (i == 0 && outputs.containsKey(encOut)) {
+                next[encIn] = outputs.remove(encOut)!;
+                await old[encIn]?.dispose();
+              } else if (old.containsKey(encIn)) {
+                next[encIn] = old[encIn]!;
+              }
+            }
+          }
+          pastKeyValues = next;
+        } finally {
+          await inputIdsOrt.dispose();
+          await useCacheBranchOrt.dispose();
+          for (var o in outputs.values) {
+            await o.dispose();
+          }
+        }
+      }
+    } finally {
+      for (var v in pastKeyValues.values) {
+        await v.dispose();
+      }
+    }
+
+    // Bỏ start token ở đầu; eos không bao giờ được thêm vào tokens.
+    return tokens.skip(1).toList();
   }
 
   void dispose() {
     _encoderSession?.close();
     _decoderSession?.close();
+    _encoderSession = null;
+    _decoderSession = null;
   }
 }
