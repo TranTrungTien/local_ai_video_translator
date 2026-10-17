@@ -166,8 +166,15 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
       throw const ResolutionException('Iframe cycle detected.');
     }
 
+    // Cập nhật Referer nếu đang ở trong iframe để tránh lỗi 403 khi load media
+    final currentHeaders = Map<String, String>.from(requestContext.headers);
+    if (iframeChain.isNotEmpty) {
+      currentHeaders['Referer'] = iframeChain.last.toString();
+    }
+    final currentContext = requestContext.copyWith(headers: currentHeaders);
+
     try {
-      final probeResult = await _probe(currentUri, cancelToken, requestContext);
+      final probeResult = await _probe(currentUri, cancelToken, currentContext);
       final finalUri = probeResult.finalUri;
       if (finalUri != currentUri && !redirectChain.contains(finalUri)) {
         redirectChain.add(finalUri);

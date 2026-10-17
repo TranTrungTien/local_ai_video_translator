@@ -7,6 +7,7 @@ import '../../../core/utils/cancellation_token.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
 import 'ffmpeg_audio_extractor.dart';
+import 'resilient_pcm_audio_extractor.dart';
 
 abstract interface class PcmAudioExtractor {
   bool get isAvailable;
@@ -21,9 +22,10 @@ abstract interface class PcmAudioExtractor {
 }
 
 class NativePcmAudioExtractor implements PcmAudioExtractor {
-  NativePcmAudioExtractor(this._diagnostics);
+  NativePcmAudioExtractor(this._diagnostics, {this.durationProvider});
 
   final DiagnosticsService _diagnostics;
+  final Duration? Function()? durationProvider;
   static const _methodChannel = MethodChannel('local_ai_video_translator/native_resolver');
   static const _eventChannel = EventChannel('local_ai_video_translator/audio_pcm');
 
@@ -57,8 +59,17 @@ class NativePcmAudioExtractor implements PcmAudioExtractor {
 
     if (!needsMediaProjection) {
       _diagnostics.log('NativeAudio', 'Local/Direct source detected. Using FFmpeg for extraction.');
-      // Use FFmpeg for local files or direct streams
-      yield* FfmpegPcmAudioExtractor(_diagnostics).extractPcmStream(
+      // Local: giữ nguyên đường FFmpeg cũ. Remote (http/https): bọc thêm lớp tự phục hồi.
+      final ffmpeg = FfmpegPcmAudioExtractor(_diagnostics);
+      final isRemote = source.uri.scheme == 'http' || source.uri.scheme == 'https';
+      final PcmAudioExtractor extractor = isRemote
+          ? ResilientPcmAudioExtractor(
+              ffmpeg,
+              _diagnostics,
+              durationProvider: durationProvider,
+            )
+          : ffmpeg;
+      yield* extractor.extractPcmStream(
         source,
         startPosition: startPosition,
         playbackSessionId: playbackSessionId,

@@ -50,7 +50,16 @@ class NativeMediaSession implements MediaSession {
     // Bind player event streams
     _subscriptions.addAll([
       _player!.stream.position.listen((pos) {
-        _updateSnapshot(_snapshot.copyWith(position: pos));
+        var next = _snapshot.copyWith(position: pos);
+        // FIX: status `seeking` trước đây không bao giờ được xóa.
+        if (_snapshot.status == PlayerStatus.seeking) {
+          next = next.copyWith(
+            status: (_player?.state.playing ?? false)
+                ? PlayerStatus.playing
+                : PlayerStatus.paused,
+          );
+        }
+        _updateSnapshot(next);
       }),
       _player!.stream.duration.listen((dur) {
         _updateSnapshot(_snapshot.copyWith(duration: dur));
@@ -69,6 +78,15 @@ class NativeMediaSession implements MediaSession {
         if (buffering) {
           _diagnostics.incrementBufferEvents();
           _updateSnapshot(_snapshot.copyWith(status: PlayerStatus.buffering));
+        } else if (_snapshot.status == PlayerStatus.buffering) {
+          // FIX: trước đây `buffering` bị kẹt vĩnh viễn -> seek bị NativePlayerView bỏ qua.
+          _updateSnapshot(
+            _snapshot.copyWith(
+              status: (_player?.state.playing ?? false)
+                  ? PlayerStatus.playing
+                  : PlayerStatus.paused,
+            ),
+          );
         }
       }),
       _player!.stream.completed.listen((completed) {

@@ -156,12 +156,12 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
       // Clean tokenizer artifacts (e.g. 'Ġ' for spaces)
       text = text.replaceAll('Ġ', ' ').replaceAll(' ', ' ').trim();
 
-      _diagnostics.log('STT', 'Result for segment: tokens=${decodedTokens.length}, text="$text"');
-
-      _diagnostics.log('STT', 'Transcribed (${decodedTokens.length} tokens): "$text"');
-
       final totalSamples = chunks.fold<int>(0, (sum, c) => sum + c.bytes.length ~/ 2);
       final duration = Duration(microseconds: (totalSamples * 1000000) ~/ 16000);
+      final startPts = chunks.first.pts;
+      final endPts = startPts + duration;
+
+      _diagnostics.log('STT', 'Result: [${startPts.inMilliseconds}ms - ${endPts.inMilliseconds}ms] text="$text"');
 
       cancellationToken.throwIfCancelled();
       return [

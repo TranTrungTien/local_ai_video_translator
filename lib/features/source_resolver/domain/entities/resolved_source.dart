@@ -78,6 +78,22 @@ class RequestContext {
   static const defaultContext = RequestContext(
     userAgent: 'Mozilla/5.0 (Linux; Android 13) LocalAIVideoTranslator/1.0',
   );
+
+  RequestContext copyWith({
+    String? userAgent,
+    String? referer,
+    String? origin,
+    Map<String, String>? headers,
+    String? cookies,
+  }) {
+    return RequestContext(
+      userAgent: userAgent ?? this.userAgent,
+      referer: referer ?? this.referer,
+      origin: origin ?? this.origin,
+      headers: headers ?? this.headers,
+      cookies: cookies ?? this.cookies,
+    );
+  }
 }
 
 class ResolvedSource {

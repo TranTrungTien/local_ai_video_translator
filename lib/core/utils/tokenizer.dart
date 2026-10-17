@@ -48,7 +48,8 @@ class SimpleTokenizer {
     }
 
     // Normalizing space to the special meta-character ' ' (U+2581)
-    final normalized = text.toLowerCase().replaceAll(' ', ' ');
+    // SentencePiece/Marian uses this to distinguish word boundaries.
+    final normalized = '\u2581${text.toLowerCase().replaceAll(' ', '\u2581')}';
     int start = 0;
     while (start < normalized.length) {
       bool found = false;
@@ -63,7 +64,7 @@ class SimpleTokenizer {
       }
       if (!found) {
         final char = normalized[start];
-        tokens.add(_vocab[char] ?? _specialTokens['<|unk|>'] ?? 3);
+        tokens.add(_vocab[char] ?? _specialTokens['<|unk|>'] ?? _specialTokens['<unk>'] ?? 3);
         start++;
       }
     }
@@ -77,9 +78,9 @@ class SimpleTokenizer {
   String decode(List<int> tokens) {
     return tokens
         .map((t) => _invVocab[t] ?? '')
-        .where((s) => !s.startsWith('<|')) // Filter special tokens
+        .where((s) => !s.startsWith('<|') && s != '</s>' && s != '<unk>') // Filter special tokens
         .join('')
-        .replaceAll(' ', ' ')
+        .replaceAll('\u2581', ' ')
         .trim();
   }
 }

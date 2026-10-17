@@ -242,6 +242,7 @@ class LocalTranslationEngine implements TranslationEngine {
       if (inputIds.isEmpty || inputIds.last != _eosToken) {
         inputIds.add(_eosToken);
       }
+      _diagnostics.log('TRANSLATION_ENGINE', 'src="$clean" ids=$inputIds');
 
       inputOrt = await OrtValue.fromList(
         Int64List.fromList(inputIds),
@@ -271,9 +272,10 @@ class LocalTranslationEngine implements TranslationEngine {
         token,
       );
 
-      String resultText = tokenizer.decode(decodedTokens);
-      // Clean tokenizer artifacts (e.g. '▁' for spaces)
-      return resultText.replaceAll('▁', ' ').replaceAll(' ', ' ').trim();
+      final resultText = tokenizer.decode(decodedTokens);
+      final translated = resultText.replaceAll('▁', ' ').replaceAll(' ', ' ').trim();
+      _diagnostics.log('TRANSLATION_ENGINE', 'out="$translated"');
+      return translated;
     } catch (e, st) {
       // Huỷ chủ động: ném lại nguyên vẹn, không log ERROR, không bọc thành lỗi model.
       if (_isCancellation(e)) rethrow;
@@ -284,9 +286,10 @@ class LocalTranslationEngine implements TranslationEngine {
       await inputOrt?.dispose();
       await attentionMaskOrt?.dispose();
       if (encoderOutputs != null) {
-        for (var o in encoderOutputs.values) {
+        for (final o in encoderOutputs.values) {
           await o.dispose();
         }
+      }
       }
     }
   }

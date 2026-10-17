@@ -231,6 +231,13 @@ class SubtitleRepositoryImpl
         body = response.data ?? '';
       }
 
+      // FIX: track phụ đề HLS trỏ tới *playlist con* (.m3u8 liệt kê segment VTT),
+      // không phải file VTT. Trước đây bị parse như VTT -> 0 cue -> gate treo.
+      if (!track.uri.isScheme('file') &&
+          _looksLikeHlsPlaylist(track.uri, body)) {
+        return _fetchHlsPlaylistDocument(track, body);
+      }
+
       final lang = _languageDetector.detectLanguage(
         declaredLanguage: track.language,
         sampleText: body.substring(0, body.length > 500 ? 500 : body.length),
@@ -258,6 +265,70 @@ class SubtitleRepositoryImpl
     }
   }
 
+  bool _looksLikeHlsPlaylist(Uri uri, String body) =>
+      body.trimLeft().startsWith('#EXTM3U') ||
+      uri.path.toLowerCase().endsWith('.m3u8');
+
+  /// Tải và gộp các segment WebVTT của một playlist phụ đề HLS.
+  /// Giả định: cue time đã nằm trên cùng timeline với player (trường hợp phổ biến,
+  /// X-TIMESTAMP-MAP khớp start_time của stream). Nếu phụ đề lệch hằng số ~vài giây
+  /// trên một nguồn cụ thể thì cần bù offset từ X-TIMESTAMP-MAP.
+  Future<SubtitleDocument> _fetchHlsPlaylistDocument(
+    SubtitleTrack track,
+    String playlistBody,
+  ) async {
+    const maxSegments = 4000;
+    const batchSize = 6;
+
+    final segmentUris = <Uri>[];
+    for (final raw in playlistBody.split(RegExp(r'\r?\n'))) {
+      final line = raw.trim();
+      if (line.isEmpty || line.startsWith('#')) continue;
+      segmentUris.add(track.uri.resolve(line));
+    }
+    final uris = segmentUris.take(maxSegments).toList();
+
+    final merged = <SubtitleSegment>[];
+    final seen = <String>{};
+    for (var i = 0; i < uris.length; i += batchSize) {
+      final bodies = await Future.wait(
+        uris.skip(i).take(batchSize).map((u) async {
+          try {
+            final r = await _dio.get<String>(
+              u.toString(),
+              options: Options(
+                responseType: ResponseType.plain,
+                headers: track.requestContext?.headers,
+              ),
+            );
+            return r.data ?? '';
+          } catch (_) {
+            return '';
+          }
+        }),
+      );
+      for (final b in bodies) {
+        if (b.isEmpty) continue;
+        final doc = _parser.parseVttDocument(b, language: track.language);
+        for (final s in doc.segments) {
+          // Cue có thể lặp ở ranh giới segment.
+          final key = '${s.start.inMilliseconds}|${s.end.inMilliseconds}|${s.text}';
+          if (seen.add(key)) merged.add(s);
+        }
+      }
+    }
+    merged.sort((a, b) => a.start.compareTo(b.start));
+
+    return SubtitleDocument(
+      id: track.id,
+      title: track.title,
+      language: track.language,
+      format: 'webvtt',
+      segments: merged,
+      sourceUri: track.uri,
+    );
+  }
+
   @override
   Future<List<TimedTextSegment>> fetchSubtitleSegments(
     SubtitleTrack track,
@@ -282,4 +353,3 @@ class SubtitleRepositoryImpl
     return const [];
   }
 }
-

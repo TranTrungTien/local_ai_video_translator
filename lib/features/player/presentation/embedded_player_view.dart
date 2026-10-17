@@ -149,7 +149,7 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
 
         const send = (value) => {
           if (typeof value !== 'string' || value.length < 10) return;
-          if (/\.m3u8|\\.mpd|\\.mp4|\\.webm/i.test(value)) {
+          if (/\.m3u8|\.mpd|\.mp4|\.webm/i.test(value)) {
             MediaObserver.postMessage(value);
           }
         };
@@ -259,6 +259,8 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
           canAccessAudio: true,
         );
       });
+      // Start AI Pipeline
+      unawaited(ref.read(aiSchedulerProvider.notifier).startAiPipelineForEmbedded());
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

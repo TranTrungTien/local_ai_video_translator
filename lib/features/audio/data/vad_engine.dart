@@ -117,6 +117,7 @@ class LocalVadEngine implements VoiceActivityDetector {
           preRollBuffer.clear();
 
           if (active != null && active.end - active.start >= minSpeechDuration) {
+            _diagnostics.log('VAD', 'Discontinuity detected, flushing segment: ${active.start.inMilliseconds}ms - ${active.end.inMilliseconds}ms');
              yield SpeechSegment(
               start: active.start,
               end: active.end,
@@ -181,6 +182,7 @@ class LocalVadEngine implements VoiceActivityDetector {
 
           // Enforce max duration for Whisper (30s limit)
           if (active.end - active.start >= maxSpeechDuration) {
+            _diagnostics.log('VAD', 'Segment reached max duration (30s): ${active.start.inMilliseconds}ms - ${active.end.inMilliseconds}ms');
             yield SpeechSegment(
               start: active.start,
               end: active.end,
@@ -201,6 +203,7 @@ class LocalVadEngine implements VoiceActivityDetector {
 
             if (pendingGap.end - pendingGap.start > maxMergeGap) {
               if (active.end - active.start >= minSpeechDuration) {
+                _diagnostics.log('VAD', 'Speech segment detected: ${active.start.inMilliseconds}ms - ${active.end.inMilliseconds}ms (${active.chunks.length} chunks)');
                 yield SpeechSegment(
                   start: active.start,
                   end: active.end,

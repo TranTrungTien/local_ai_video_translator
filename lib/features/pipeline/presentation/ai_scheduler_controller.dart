@@ -23,7 +23,6 @@ import '../domain/ai_pipeline.dart';
 import '../domain/buffer_policy.dart';
 import '../domain/device_capability.dart';
 import '../domain/dub_segment.dart';
-import '../domain/playback_gate.dart';
 import '../domain/timeline_subtitle_buffer.dart';
 import '../../player/presentation/media_session_controller.dart';
 
@@ -78,7 +77,7 @@ class AiSchedulerState {
     Object? activeSegment = _keep,
     bool? isBufferingForAi,
     double? playbackRate,
-    String? errorMessage,
+    Object? errorMessage = _keep,
     double? overallProgress,
   }) {
     return AiSchedulerState(
@@ -93,7 +92,10 @@ class AiSchedulerState {
           : activeSegment as TimedTextSegment?,
       isBufferingForAi: isBufferingForAi ?? this.isBufferingForAi,
       playbackRate: playbackRate ?? this.playbackRate,
-      errorMessage: errorMessage ?? (identical(errorMessage, _keep) ? this.errorMessage : null),
+      // FIX: dùng sentinel; trước đây mọi copyWith không truyền errorMessage đều xóa lỗi.
+      errorMessage: identical(errorMessage, _keep)
+          ? this.errorMessage
+          : errorMessage as String?,
       overallProgress: overallProgress ?? this.overallProgress,
     );
   }
@@ -131,7 +133,9 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
            activeSessionId: 'none',
            overallProgress: 0.0,
          ),
-       );
+       ) {
+    _initTimelineBuffer();
+  }
 
   final SubtitleRepository _subtitleRepository;
   final Ref _ref;
@@ -144,9 +148,8 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
   final DiagnosticsService _diagnostics;
   final DeviceCapabilityProfile _deviceProfile;
 
-  final TimelineSubtitleBuffer _timelineBuffer = TimelineSubtitleBuffer();
+  late final TimelineSubtitleBuffer _timelineBuffer;
   final _policy = const AiBufferPolicy();
-  final _playbackGate = const PlaybackGate();
 
   int _generation = 0;
   CancellationToken? _activeToken;
@@ -162,6 +165,10 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
 
   String get activeSessionId => _activeToken?.hashCode.toString() ?? 'none';
 
+  void _initTimelineBuffer() {
+    _timelineBuffer = TimelineSubtitleBuffer(_diagnostics);
+  }
+
   void attachPlayback({required VoidCallback pause, required VoidCallback play}) {
     // Currently relying on MediaSessionController to avoid circular dependency
     // and ensure single source of truth for playback state.
@@ -175,6 +182,8 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     _activeTrack = null;
     _consecutiveFailures = 0;
     _gatePaused = false;
+    _playbackPosSub?.cancel();
+    _playbackPosSub = null;
     state = state.copyWith(
       errorMessage: null,
       workMode: AiWorkMode.starting,
@@ -183,6 +192,8 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       dubReadyUntil: Duration.zero,
     );
   }
+
+  StreamSubscription? _playbackPosSub;
 
   Future<void> initializeForSource(ResolvedSource source) async {
     final gen = _beginNewSession();
@@ -211,7 +222,14 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
               : SubtitleFormat.srt,
           isTargetLanguage: false,
         );
-        await _loadSubtitleTrack(manualTrack, gen, translate: true);
+        final manualOk =
+            await _loadSubtitleTrack(manualTrack, gen, translate: true);
+        if (!manualOk && !_isStale(gen)) {
+          state = state.copyWith(
+            errorMessage: 'Tệp phụ đề thủ công không có nội dung hợp lệ.',
+            workMode: AiWorkMode.blocked,
+          );
+        }
         return;
       }
 
@@ -227,27 +245,52 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
           activeSourceStrategy: 'Using Existing Vietnamese Subtitles',
         );
         _isTranslatingCues = false;
-        await _loadSubtitleTrack(viTrack, gen, translate: false);
-        return;
+        final viOk = await _loadSubtitleTrack(viTrack, gen, translate: false);
+        if (viOk || _isStale(gen)) return;
+        // FIX: track 0 cue không được phép làm treo gate -> thử chiến lược kế tiếp.
+        _diagnostics.log(
+          'AIScheduler',
+          'Vietnamese track "${viTrack.title}" has no usable cues, falling back',
+          level: LogLevel.warning,
+        );
       }
 
-      final foreignTrack = tracks.firstOrNull;
-      if (foreignTrack != null) {
+      for (final foreignTrack in tracks.where((t) => t != viTrack)) {
         state = state.copyWith(
           activeSourceStrategy:
               'Translating ${foreignTrack.language.toUpperCase()} Subtitles',
         );
         _isTranslatingCues = true;
-        await _loadSubtitleTrack(foreignTrack, gen, translate: true);
+        final ok = await _loadSubtitleTrack(foreignTrack, gen, translate: true);
+        if (ok || _isStale(gen)) return;
+        _diagnostics.log(
+          'AIScheduler',
+          'Subtitle track "${foreignTrack.title}" has no usable cues, trying next',
+          level: LogLevel.warning,
+        );
+      }
+      _isTranslatingCues = false;
+      _activeTrack = null;
+
+      if (source.kind == ResolvedSourceKind.embedded) {
+        state = state.copyWith(
+          activeSourceStrategy: 'Ready (Enable AI to start)',
+        );
         return;
       }
 
-      // Check models before starting AI pipeline
       await _checkModelsReady();
 
       state = state.copyWith(
         activeSourceStrategy: 'AI Pipeline (VAD -> STT -> Translation)',
       );
+
+      // C1: Bắt đầu lắng nghe position ngay lập tức để Gate có thể hoạt động
+      _playbackPosSub?.cancel();
+      _playbackPosSub = _ref.read(nativeMediaSessionProvider).snapshotStream.listen((s) {
+        updatePlaybackPosition(s.position);
+      });
+
       await _runAudioSttPipeline(source, gen, startAt: state.playbackPosition);
     } on OperationCancelledException {
       _diagnostics.log('AIScheduler', 'Pipeline cancelled for gen $gen');
@@ -299,22 +342,28 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     }
   }
 
-  Future<void> _loadSubtitleTrack(
+  /// Trả về true nếu track có cue và đã được nạp (hoặc phiên đã stale);
+  /// false nếu track rỗng để caller fallback.
+  Future<bool> _loadSubtitleTrack(
     SubtitleTrack track,
     int gen, {
     required bool translate,
   }) async {
     _activeTrack = track;
     final raw = await _subtitleRepository.fetchSubtitleSegments(track);
-    if (_isStale(gen)) return;
+    if (_isStale(gen)) return true;
+    if (raw.isEmpty) {
+      _activeTrack = null;
+      return false;
+    }
 
     final startIndex = raw.indexWhere((s) => s.end >= state.playbackPosition);
     final startAt = startIndex < 0 ? 0 : startIndex;
 
     for (var i = startAt; i < raw.length; i += 20) {
-      if (_isStale(gen)) return;
+      if (_isStale(gen)) return true;
       await _waitUntilBufferNeeded(gen);
-      if (_isStale(gen)) return;
+      if (_isStale(gen)) return true;
 
       final batch = raw.skip(i).take(20).toList();
       final processedBatch = translate
@@ -325,7 +374,7 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
             )
           : batch;
 
-      if (_isStale(gen)) return;
+      if (_isStale(gen)) return true;
       _timelineBuffer.addSegments(processedBatch);
 
       final nextStart = i + 20 < raw.length ? raw[i + 20].start : const Duration(days: 1);
@@ -334,6 +383,7 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       unawaited(_synthesizeBatch(processedBatch, gen, _activeToken!));
       _updateBufferState();
     }
+    return true;
   }
 
   Future<void> _synthesizeBatch(
@@ -429,10 +479,13 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
           _diagnostics.log('AIScheduler', 'STT Result: "${sttSegments.map((s) => s.text).join(" ")}"');
         }
 
-        final translated = sttSegments.isEmpty
+        // C5: Tách câu ở mức STT để translation chính xác và subtitle mượt hơn
+        final splitStt = _splitIntoSentences(sttSegments);
+
+        final translated = splitStt.isEmpty
             ? const <TimedTextSegment>[]
             : await _translationEngine.translate(
-                sttSegments,
+                splitStt,
                 targetLanguage: AppConstants.targetLanguage,
                 cancellationToken: token,
               );
@@ -441,6 +494,7 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
           _diagnostics.log('AIScheduler', 'Translation Result: "${translated.map((s) => s.text).join(" ")}"');
         }
 
+        _diagnostics.log('AIScheduler', 'Adding ${translated.length} segments to buffer at ${speech.start.inMilliseconds}ms');
         _timelineBuffer.addSegments(translated, metadata: speech.start);
         // Dubbing is temporarily disabled as per request, only subtitles are processed.
         // unawaited(_synthesizeBatch(translated, gen, token));
@@ -491,9 +545,16 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     _timelineBuffer.pruneObsolete(pts);
     _dubbingRepository.prune(pts);
 
-    final activeSeg = _timelineBuffer.segmentAt(pts);
-    if (activeSeg != null) {
-      _diagnostics.log('AIScheduler', 'Active Segment at ${pts.inMilliseconds}ms: "${activeSeg.text}"');
+    // Trong chế độ Capture (Luồng 3), chúng ta hiển thị segment mới nhất vừa nhận được
+    // thay vì dựa trên PTS chính xác của player, vì audio thu từ loa luôn trễ.
+    final bool isCaptureMode = activeSource?.kind == MediaKind.embedded;
+
+    final activeSeg = isCaptureMode
+        ? (_timelineBuffer.lastProcessedSegment ?? _timelineBuffer.segmentAt(pts))
+        : _timelineBuffer.segmentAt(pts);
+
+    if (activeSeg != null && !isCaptureMode) {
+      _diagnostics.log('AIScheduler', 'Active Segment at ${pts.inMilliseconds}ms: "${activeSeg.text}"', level: LogLevel.debug);
     }
 
     final dubSeg = _dubbingRepository.getSegmentAt(pts);
@@ -511,6 +572,8 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
 
   void handleSeek(Duration newPts) {
     final gen = _beginNewSession();
+    // Seek = cơ hội thử lại: xóa lỗi cũ (errorMessage giờ không còn tự bị xóa).
+    state = state.copyWith(errorMessage: null);
     _timelineBuffer.flushObsolete(newPts);
     _dubbingRepository.clear();
     _consecutiveFailures = 0;
@@ -520,17 +583,77 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     final source = activeSource;
     if (source != null) {
       if (state.activeSourceStrategy.contains('AI Pipeline')) {
-        unawaited(_runAudioSttPipeline(source, gen, startAt: newPts));
+        unawaited(_guardPipeline(
+          gen,
+          _runAudioSttPipeline(source, gen, startAt: newPts),
+        ));
       } else if (_activeTrack != null) {
-        unawaited(_loadSubtitleTrack(_activeTrack!, gen,
-            translate: _isTranslatingCues));
+        unawaited(_guardPipeline(
+          gen,
+          _loadSubtitleTrack(_activeTrack!, gen, translate: _isTranslatingCues),
+        ));
       }
+    }
+  }
+
+  /// FIX: pipeline khởi động từ handleSeek chạy unawaited, trước đây lỗi/hủy
+  /// không được bắt (unhandled async error, lỗi thật không lên UI).
+  Future<void> _guardPipeline(int gen, Future<Object?> run) async {
+    try {
+      await run;
+    } on OperationCancelledException {
+      // Bị thay thế bởi seek mới / stop: bình thường.
+    } catch (e, st) {
+      if (_isStale(gen)) return;
+      _diagnostics.log(
+        'AIScheduler',
+        'Pipeline after seek failed: $e',
+        level: LogLevel.error,
+        details: st.toString(),
+      );
+      state = state.copyWith(
+        errorMessage: 'Không thể tiếp tục tạo phụ đề: $e',
+        workMode: AiWorkMode.blocked,
+      );
     }
   }
 
   void updatePlaybackRate(double rate) {
     state = state.copyWith(playbackRate: rate);
     _updateBufferState();
+  }
+
+  Future<void> startAiPipelineForEmbedded() async {
+    final source = activeSource;
+    if (source == null || source.kind != ResolvedSourceKind.embedded) return;
+    if (state.activeSourceStrategy == 'AI Pipeline (VAD -> STT -> Translation)') {
+      return;
+    }
+
+    final gen = activeSessionId.hashCode; // Keep current session
+    try {
+      await _checkModelsReady();
+
+      state = state.copyWith(
+        activeSourceStrategy: 'AI Pipeline (VAD -> STT -> Translation)',
+      );
+
+      // Listen to position (embedded might not have it yet, but sync stream does)
+      _playbackPosSub?.cancel();
+      _playbackPosSub =
+          _ref.read(nativeMediaSessionProvider).snapshotStream.listen((s) {
+            updatePlaybackPosition(s.position);
+          });
+
+      await _runAudioSttPipeline(source, gen, startAt: state.playbackPosition);
+    } catch (e) {
+      // Re-handle in initializeForSource style if needed,
+      // but here we just want to allow manual start.
+      state = state.copyWith(
+        errorMessage: 'Không thể khởi động AI: $e',
+        workMode: AiWorkMode.blocked,
+      );
+    }
   }
 
   void _updateBufferState() {
@@ -551,11 +674,13 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       playbackRate: state.playbackRate,
     );
 
-    if (!_gatePaused && ahead <= Duration.zero && state.playbackPosition > Duration.zero) {
+    final bool isCaptureMode = activeSource?.kind == MediaKind.embedded;
+
+    if (!isCaptureMode && !_gatePaused && ahead <= Duration.zero && state.playbackPosition > Duration.zero) {
       _gatePaused = true;
       _diagnostics.log('AIScheduler', 'Gate: Pausing video (buffer empty)');
       unawaited(_ref.read(mediaSessionControllerProvider.notifier).pause());
-    } else if (_gatePaused && ahead >= resumeAt) {
+    } else if (_gatePaused && (ahead >= resumeAt || isCaptureMode)) {
       _gatePaused = false;
       _diagnostics.log('AIScheduler', 'Gate: Resuming video (buffer ready: ${ahead.inSeconds}s)');
       unawaited(_ref.read(mediaSessionControllerProvider.notifier).play());
@@ -586,8 +711,43 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
   @override
   void dispose() {
     _activeToken?.cancel();
+    _playbackPosSub?.cancel();
     _generation++;
     super.dispose();
+  }
+
+  List<TimedTextSegment> _splitIntoSentences(List<TimedTextSegment> segments) {
+    final result = <TimedTextSegment>[];
+    final sentenceEnd = RegExp(r'(?<=[.!?])\s+');
+
+    for (final seg in segments) {
+      final sentences = seg.text.split(sentenceEnd);
+      if (sentences.length <= 1) {
+        result.add(seg);
+        continue;
+      }
+
+      final totalChars = seg.text.length;
+      final totalDuration = seg.end - seg.start;
+      var currentStart = seg.start;
+
+      for (final s in sentences) {
+        final cleanS = s.trim();
+        if (cleanS.isEmpty) continue;
+        final duration = Duration(
+          milliseconds: (totalDuration.inMilliseconds * (s.length / totalChars)).round(),
+        );
+        final end = currentStart + duration;
+        result.add(TimedTextSegment(
+          start: currentStart,
+          end: end > seg.end ? seg.end : end,
+          text: cleanS,
+          language: seg.language,
+        ));
+        currentStart = end;
+      }
+    }
+    return result;
   }
 }
 
@@ -629,7 +789,14 @@ final ttsEngineProvider = Provider<TextToSpeechEngine>((ref) {
 
 final pcmAudioExtractorProvider = Provider<PcmAudioExtractor>((ref) {
   if (Platform.isAndroid) {
-    return NativePcmAudioExtractor(ref.watch(diagnosticsServiceProvider));
+    return NativePcmAudioExtractor(
+      ref.watch(diagnosticsServiceProvider),
+      // Dùng để phân biệt EOF thật với stream bị cắt giữa chừng (nguồn remote).
+      durationProvider: () {
+        final d = ref.read(nativeMediaSessionProvider).currentSnapshot.duration;
+        return (d != null && d > Duration.zero) ? d : null;
+      },
+    );
   }
   return const DefaultPcmAudioExtractor();
 });

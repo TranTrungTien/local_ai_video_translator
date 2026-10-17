@@ -52,12 +52,17 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
         ? source.uri.toFilePath()
         : source.uri.toString();
 
+    // Chỉ áp dụng cho HLS từ xa; local giữ nguyên tham số cũ (rw_timeout 5s).
+    final isRemoteHls =
+        source.kind == MediaKind.hls && !source.uri.isScheme('file');
+    final rwTimeout = source.uri.isScheme('file') ? '5000000' : '15000000';
+
     final List<String> args = [
       '-y',
       '-nostdin',
       '-hide_banner',
       '-rw_timeout',
-      '5000000',
+      rwTimeout,
     ];
 
     if (source.requestContext.headers.isNotEmpty &&
@@ -69,19 +74,24 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
         args.addAll(['-user_agent', userAgent]);
       }
 
-      final headersString = source.requestContext.headers.entries
-              .where((e) => e.key.toLowerCase() != 'user-agent')
-              .map((e) => '${e.key}: ${e.value}')
-              .join('\r\n') +
-          '\r\n\r\n'; // QUAN TRỌNG: FFmpeg yêu cầu kết thúc bằng 2 cặp CRLF để đánh dấu hết header
+      final headers = source.requestContext.headers.entries
+          .where((e) => e.key.toLowerCase() != 'user-agent')
+          .map((e) => '${e.key}: ${e.value}')
+          .join('\r\n');
 
-      if (headersString.trim().isNotEmpty) {
-        args.addAll(['-headers', headersString]);
+      if (headers.trim().isNotEmpty) {
+        args.addAll(['-headers', '$headers\r\n\r\n']);
       }
     }
 
     if (startMs > 0) {
       args.addAll(['-ss', (startMs / 1000.0).toString()]);
+    }
+
+    // Segment HLS có đuôi lạ (.jpg/.png...) sẽ bị FFmpeg từ chối nếu thiếu tùy chọn này.
+    // Là option riêng của demuxer HLS nên CHỈ thêm khi chắc chắn là HLS.
+    if (isRemoteHls) {
+      args.addAll(['-allowed_extensions', 'ALL']);
     }
 
     args.addAll(['-i', inputPath]);

@@ -1,8 +1,12 @@
+import '../../../core/diagnostics/diagnostics_service.dart';
 import 'ai_pipeline.dart';
 
 enum TimelineReadinessMode { liveAi, completeSubtitleDocument }
 
 class TimelineSubtitleBuffer {
+  TimelineSubtitleBuffer(this._diagnostics);
+
+  final DiagnosticsService _diagnostics;
   final List<TimedTextSegment> _segments = [];
   final List<_PendingRange> _pendingSegments = [];
   Duration _vadProgress = Duration.zero;
@@ -13,6 +17,7 @@ class TimelineSubtitleBuffer {
   List<TimedTextSegment> get segments => List.unmodifiable(_segments);
   Duration get subtitleReadyUntil => _watermark;
   Duration get retainedFrom => _floor;
+  TimedTextSegment? get lastProcessedSegment => _segments.isNotEmpty ? _segments.last : null;
 
   void beginLiveAiTimeline({Duration floor = Duration.zero}) {
     _mode = TimelineReadinessMode.liveAi;
@@ -31,8 +36,9 @@ class TimelineSubtitleBuffer {
 
   void reportProgress(Duration pts, {Duration? activeSpeechStart}) {
     if (_mode != TimelineReadinessMode.liveAi) return;
-    final certainUntil = activeSpeechStart ?? pts;
-    if (certainUntil > _vadProgress) _vadProgress = certainUntil;
+    // Điểm tiến triển thực tế của VAD là pts (nơi nó đã quét qua).
+    // Chúng ta cho phép watermark tiến tới pts để tránh Gate pause video khi đang có người nói.
+    if (pts > _vadProgress) _vadProgress = pts;
     _updateWatermark();
   }
 
@@ -48,10 +54,12 @@ class TimelineSubtitleBuffer {
   }
 
   void addSegments(List<TimedTextSegment> newSegments, {Duration? metadata}) {
-    print('DEBUG_SUB: Adding ${newSegments.length} segments. metadata=$metadata');
-    for (var s in newSegments) {
-      print('DEBUG_SUB:   - [${s.start.inMilliseconds}ms - ${s.end.inMilliseconds}ms]: "${s.text}"');
+    if (newSegments.isNotEmpty) {
+      for (var s in newSegments) {
+        _diagnostics.log('SUB_BUFFER', 'Adding segment: [${s.start.inMilliseconds}ms - ${s.end.inMilliseconds}ms] "${s.text}"');
+      }
     }
+    // metadata is the 'start' of the pending range
     if (metadata != null) {
       _pendingSegments.removeWhere((p) => p.start == metadata);
     }
@@ -59,7 +67,6 @@ class TimelineSubtitleBuffer {
     _segments.sort((a, b) => a.start.compareTo(b.start));
     _deduplicate();
     _updateWatermark();
-    print('DEBUG_SUB: Watermark updated to ${_watermark.inMilliseconds}ms. Total segments: ${_segments.length}');
   }
 
   void _deduplicate() {
@@ -79,6 +86,7 @@ class TimelineSubtitleBuffer {
     _segments
       ..clear()
       ..addAll(unique);
+    _diagnostics.log('SUB_BUFFER', 'Total segments in buffer: ${_segments.length}, watermark: ${_watermark.inMilliseconds}ms');
   }
 
   void _updateWatermark() {
@@ -123,9 +131,11 @@ class TimelineSubtitleBuffer {
   }
 
   TimedTextSegment? segmentAt(Duration pts) {
-    // Retained window is bounded, so a linear lookup remains inexpensive.
+    // Linear search is fine for small buffers, but let's ensure it's not missing matches
     for (final seg in _segments) {
-      if (pts >= seg.start && pts <= seg.end) return seg;
+      if (pts >= seg.start && pts <= seg.end) {
+        return seg;
+      }
     }
     return null;
   }

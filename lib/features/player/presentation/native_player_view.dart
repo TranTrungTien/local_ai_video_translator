@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../../core/diagnostics/presentation/diagnostic_log_overlay.dart';
 import '../../pipeline/presentation/ai_scheduler_controller.dart';
 import '../../pipeline/presentation/dubbing_controller.dart';
@@ -57,11 +58,19 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
         play: () => ref.read(mediaSessionControllerProvider.notifier).play(),
       );
 
-      await sched.initializeForSource(widget.source);
-
       _posSub = session.snapshotStream.listen((s) {
+        ref.read(diagnosticsServiceProvider).log(
+          'UI',
+          'pos=${s.position.inMilliseconds} playing=${s.isPlaying} status=${s.status.name}',
+          level: LogLevel.debug,
+        );
+
+        final sched = ref.read(aiSchedulerProvider.notifier);
+        final aiState = ref.read(aiSchedulerProvider);
+
         final delta = (s.position - _lastPos).abs();
-        if (delta < const Duration(milliseconds: 200)) return; // throttle
+        // Không throttle nếu đang buffering cho AI để đảm bảo UI cập nhật ngay khi sub về
+        if (delta < const Duration(milliseconds: 200) && !aiState.isBufferingForAi) return;
 
         final isJump = delta > Duration(milliseconds: (1500 * s.playbackRate).round()) &&
             s.status != PlayerStatus.buffering;
@@ -73,6 +82,8 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
           sched.updatePlaybackPosition(s.position);
         }
       });
+
+      await sched.initializeForSource(widget.source);
     });
   }
 
@@ -149,25 +160,7 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
         fit: StackFit.expand,
         children: [
           Center(child: Video(controller: _videoController!)),
-          SubtitleOverlay(segment: aiState.activeSegment),
           _TrackSelectorOverlay(sessionSnapshot: sessionSnapshot),
-          if (kDebugMode)
-            Positioned(
-              bottom: 80,
-              right: 16,
-              child: FloatingActionButton.small(
-                backgroundColor: Colors.black54,
-                child: const Icon(Icons.bug_report, color: Colors.redAccent),
-                onPressed: () {
-                  showModalBottomSheet(
-                    context: context,
-                    isScrollControlled: true,
-                    backgroundColor: Colors.transparent,
-                    builder: (context) => const DiagnosticLogOverlay(),
-                  );
-                },
-              ),
-            ),
           if (aiState.isBufferingForAi)
             Container(
               color: Colors.black54,
@@ -191,6 +184,22 @@ class _NativePlayerViewState extends ConsumerState<NativePlayerView> {
                     ),
                   ],
                 ),
+              ),
+            ),
+          // Phụ đề nên nằm trên lớp Buffering để người dùng có thể đọc khi video đang dừng
+          SubtitleOverlay(segment: aiState.activeSegment),
+          if (kDebugMode)
+            Positioned(
+              bottom: 80,
+              right: 16,
+              child: FloatingActionButton.small(
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) => const DiagnosticLogOverlay(),
+                  );
+                },
+                child: const Icon(Icons.bug_report),
               ),
             ),
         ],
