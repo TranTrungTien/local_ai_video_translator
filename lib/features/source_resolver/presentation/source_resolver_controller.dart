@@ -60,14 +60,10 @@ class SourceResolverController extends AsyncNotifier<ResolvedSource?> {
         return state.value;
       }
 
-      if (result != null) {
-        if (_manualSubtitlePath != null) {
-          state = AsyncData(result.copyWith(manualSubtitlePath: _manualSubtitlePath));
-        } else {
-          state = AsyncData(result);
-        }
+      if (_manualSubtitlePath != null) {
+        state = AsyncData(result.copyWith(manualSubtitlePath: _manualSubtitlePath));
       } else {
-        state = const AsyncData(null);
+        state = AsyncData(result);
       }
     } catch (e, st) {
       if (generation != _requestGeneration) {

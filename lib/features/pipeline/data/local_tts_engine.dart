@@ -124,14 +124,20 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
       Map<String, OrtValue>? outputs;
 
       try {
-        // 1. Phonemization/Tokenization
         final phonemeIds = _textToPhonemeIds(cleanText);
 
         // 2. Calculate Length Scale to match targetDuration
-        const baselinePhonemesPerSecond = 13.5;
+        // Piper lengthScale: 1.0 = normal, > 1.0 = slower, < 1.0 = faster.
+        // Tỷ lệ âm tiết tiếng Việt trung bình khoảng 3.5 - 4.5 âm tiết/giây.
+        // Mỗi âm tiết có trung bình ~4 phonemes. Vậy ~16 phonemes/giây là hợp lý.
+        const baselinePhonemesPerSecond = 16.0;
         final estimatedNaturalDurationMs = (phonemeIds.length / baselinePhonemesPerSecond) * 1000;
+
+        // Tính toán scale để khớp với targetDuration của video
         double lengthScale = targetDuration.inMilliseconds / estimatedNaturalDurationMs;
-        lengthScale = lengthScale.clamp(0.6, 2.5);
+
+        // Giới hạn scale trong khoảng an toàn (0.6x đến 2.0x tốc độ)
+        lengthScale = lengthScale.clamp(0.6, 2.0);
 
         inputOrt = await OrtValue.fromList(
           Int64List.fromList(phonemeIds),
@@ -139,6 +145,8 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
         );
 
         inputLengthsOrt = await OrtValue.fromList(Int64List.fromList([phonemeIds.length]), [1]);
+
+        // noiseScale=0.667, lengthScale=X, noiseW=0.8
         scalesOrt = await OrtValue.fromList(Float32List.fromList([0.667, lengthScale, 0.8]), [3]);
 
         final inputs = {
@@ -151,18 +159,41 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
 
         // 3. Process Output
         final outputVal = outputs['output'];
-        final outputTensor = outputVal != null ? await outputVal.asList() as List<dynamic>? : null;
+        if (outputVal == null) throw Exception('TTS Output is null');
 
-        if (outputTensor != null && outputTensor.isNotEmpty) {
+        final List<dynamic> outputTensor = await outputVal.asList();
+
+        if (outputTensor.isNotEmpty) {
           final List<double> flatData = [];
+          // Piper thường output [1, T] hoặc [1, T, 1]
           if (outputTensor[0] is List) {
-             flatData.addAll((outputTensor[0] as List).map((e) => (e as num).toDouble()));
+             final firstDim = outputTensor[0] as List;
+             if (firstDim.isNotEmpty && firstDim[0] is List) {
+               // [1, T, 1] case
+               for (var frame in firstDim) {
+                 flatData.add((frame as List)[0] as double);
+               }
+             } else {
+               // [1, T] case
+               flatData.addAll(firstDim.map((e) => (e as num).toDouble()));
+             }
           } else {
              flatData.addAll(outputTensor.map((e) => (e as num).toDouble()));
           }
 
           final floatAudio = Float32List.fromList(flatData);
-          final pcm16 = _float32ToPcm16(floatAudio);
+          var pcm16 = _float32ToPcm16(floatAudio);
+
+          // Hậu xử lý: Nếu audio sinh ra quá ngắn, thêm silence padding để khớp với timeline
+          final currentDurationMs = (pcm16.length / (16000 * 2)) * 1000;
+          if (currentDurationMs < targetDuration.inMilliseconds - 100) {
+             final paddingSize = ((targetDuration.inMilliseconds - currentDurationMs) * 16000 * 2 / 1000).toInt();
+             if (paddingSize > 0) {
+               final padded = Uint8List(pcm16.length + (paddingSize & ~1));
+               padded.setRange(0, pcm16.length, pcm16);
+               pcm16 = padded;
+             }
+          }
 
           stopwatch.stop();
           final audioDurationSec = pcm16.length / (16000 * 2);

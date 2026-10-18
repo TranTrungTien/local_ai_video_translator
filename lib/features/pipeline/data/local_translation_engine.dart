@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 
 import 'performance_monitor.dart';
@@ -290,7 +289,6 @@ class LocalTranslationEngine implements TranslationEngine {
           await o.dispose();
         }
       }
-      }
     }
   }
 
@@ -373,24 +371,49 @@ class LocalTranslationEngine implements TranslationEngine {
 
           int nextToken = -1;
           double maxLogit = -double.infinity;
+          const double repetitionPenalty = 1.2;
+
           for (int j = 0; j < lastLogits.length; j++) {
-            // Marian không được sinh pad (= start token), theo bad_words_ids của generation config.
+            // Marian không được sinh pad (= start token)
             if (j == _startToken) continue;
-            final val = (lastLogits[j] as num).toDouble();
+
+            double val = (lastLogits[j] as num).toDouble();
+
+            // Repetition penalty cho dịch thuật
+            if (tokens.contains(j)) {
+              if (val > 0) {
+                val /= repetitionPenalty;
+              } else {
+                val *= repetitionPenalty;
+              }
+            }
+
             if (val > maxLogit) {
               maxLogit = val;
               nextToken = j;
             }
           }
 
-          if (nextToken == -1 || nextToken == _eosToken) break;
+          if (nextToken == -1 || nextToken == _eosToken) {
+            break;
+          }
           tokens.add(nextToken);
 
-          // Chống lặp: dừng nếu 4 token sinh ra gần nhất giống hệt nhau.
-          if (tokens.length - 1 >= 4) {
-            final t = tokens.sublist(tokens.length - 4);
-            if (t.every((x) => x == t.first)) {
-              tokens.removeRange(tokens.length - 3, tokens.length);
+          // Chống lặp n-gram (ví dụ: "tôi là tôi là tôi là")
+          const int n = 3;
+          if (tokens.length >= n * 3) {
+            final tail = tokens.sublist(tokens.length - n);
+            bool isLooping = true;
+            for (int r = 1; r <= 2; r++) {
+              final start = tokens.length - n * (r + 1);
+              final prev = tokens.sublist(start, start + n);
+              if (!listEquals(tail, prev)) {
+                isLooping = false;
+                break;
+              }
+            }
+            if (isLooping) {
+              _diagnostics.log('TRANSLATION', 'N-gram loop detected, breaking translation early.', level: LogLevel.warning);
               break;
             }
           }

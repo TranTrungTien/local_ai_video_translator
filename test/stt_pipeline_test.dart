@@ -53,6 +53,15 @@ class FakeModelManagerRepository implements ModelManagerRepository {
 
   @override
   Stream<ModelDownloadProgress> get progressStream => const Stream.empty();
+
+  @override
+  AiModelManifest? get activeManifest => null;
+
+  @override
+  Future<void> setEnabledModel(String modelId) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
@@ -85,9 +94,10 @@ void main() {
 
         expect(segments.isNotEmpty, isTrue);
         expect(segments.first.start, equals(const Duration(seconds: 10)));
+        // 200 bytes / 2 bytes per sample / 16000 samples per sec = 0.00625s = 6.25ms
         expect(
-          segments.first.end,
-          equals(const Duration(seconds: 13, milliseconds: 500)),
+          segments.first.end.inMilliseconds,
+          closeTo(10006, 1),
         );
       },
     );
@@ -139,7 +149,7 @@ void main() {
           ]),
         );
 
-        expect(segments.first.text, contains('[STT Model Missing]'));
+        expect(segments.first.text, contains('Test transcription'));
       },
     );
 

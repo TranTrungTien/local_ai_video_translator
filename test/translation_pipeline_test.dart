@@ -45,6 +45,15 @@ class FakeModelManagerRepository implements ModelManagerRepository {
 
   @override
   Stream<ModelDownloadProgress> get progressStream => const Stream.empty();
+
+  @override
+  AiModelManifest? get activeManifest => null;
+
+  @override
+  Future<void> setEnabledModel(String modelId) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {

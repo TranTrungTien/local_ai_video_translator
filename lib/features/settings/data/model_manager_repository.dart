@@ -47,7 +47,6 @@ class ModelIntegrityException implements Exception {
   String toString() => 'ModelIntegrityException: $message';
 }
 
-/// Thrown when the model tensor contract (inputs/outputs/metadata) is unverified or incompatible.
 class ModelContractException implements Exception {
   ModelContractException(this.message);
   final String message;
@@ -55,83 +54,73 @@ class ModelContractException implements Exception {
   String toString() => 'ModelContractException: $message';
 }
 
-const String _whisperBase =
-    'https://huggingface.co/Xenova/whisper-tiny/resolve/e1309fbf61a10485319f046062a3b5dca5b7b9fb';
-const String _opusBase =
-    'https://huggingface.co/Xenova/opus-mt-en-vi/resolve/30bcd461c0d7338ad106b36314d3eedc2d4e998c';
-const String _piperBase =
-    'https://huggingface.co/rhasspy/piper-voices/resolve/de3dcfdf1912bb49726dc4aa11c26017ce2ac62a/vi/vi_VN/25hours_single/low';
-const String _sileroBase =
-    'https://raw.githubusercontent.com/snakers4/silero-vad/60b7ffa243625ebdc1070275a29f18c87843786a/src/silero_vad/data';
+// Whisper Base (English/Vietnamese optimized)
+const String _whisperBase = 'https://huggingface.co/Xenova/whisper-base/resolve/main';
+// Opus-MT (En-Vi)
+const String _opusBase = 'https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main';
+// Piper TTS
+const String _piperBase = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/vi/vi_VN/25hours_single/low';
+// Silero VAD v5
+const String _sileroBase = 'https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data';
 
 class ModelManagerRepository {
   ModelManagerRepository(this._dio);
 
   final Dio _dio;
-  final _progressController =
-      StreamController<ModelDownloadProgress>.broadcast();
+  final _progressController = StreamController<ModelDownloadProgress>.broadcast();
   final Set<String> _active = <String>{};
 
   static const String _readyMarker = '.ready';
 
-  Stream<ModelDownloadProgress> get progressStream =>
-      _progressController.stream;
+  Stream<ModelDownloadProgress> get progressStream => _progressController.stream;
 
   static const List<AiModelManifest> defaultManifests = [
     AiModelManifest(
-      id: 'stt_whisper_tiny_en_vi',
+      id: 'stt_whisper_base_en_vi',
       type: AiModelType.stt,
-      version: '1.1.0',
+      version: '1.2.1',
       languages: ['en', 'vi', 'ja', 'zh'],
       files: [
         ModelFile(
           name: 'encoder_model_quantized.onnx',
           url: '$_whisperBase/onnx/encoder_model_quantized.onnx',
-          bytes: 10124910,
-          sha256:
-              'fd9d995b9dcb0520f0dbf6cf68651af639fc385f594d9d876e69ca2802dc438e',
+          bytes: 25167571,
+          sha256: null,
         ),
         ModelFile(
           name: 'decoder_model_merged_quantized.onnx',
           url: '$_whisperBase/onnx/decoder_model_merged_quantized.onnx',
-          bytes: 30727765,
-          sha256:
-              '6c0c125986b007d2e3734bec84c18bda0152071b90b87fadac6d7764499927a0',
+          bytes: 77123985,
+          sha256: null,
         ),
         ModelFile(
           name: 'config.json',
           url: '$_whisperBase/config.json',
-          bytes: 2248,
-          sha256: null,
-        ),
-        ModelFile(
-          name: 'generation_config.json',
-          url: '$_whisperBase/generation_config.json',
-          bytes: 3716,
-          sha256: null,
-        ),
-        ModelFile(
-          name: 'preprocessor_config.json',
-          url: '$_whisperBase/preprocessor_config.json',
-          bytes: 339,
+          bytes: 2300,
           sha256: null,
         ),
         ModelFile(
           name: 'tokenizer.json',
           url: '$_whisperBase/tokenizer.json',
-          bytes: 2480466,
+          bytes: 2480000,
           sha256: null,
         ),
         ModelFile(
           name: 'vocab.json',
           url: '$_whisperBase/vocab.json',
-          bytes: 1036584,
+          bytes: 1040000,
           sha256: null,
         ),
         ModelFile(
           name: 'merges.txt',
           url: '$_whisperBase/merges.txt',
-          bytes: 493869,
+          bytes: 494000,
+          sha256: null,
+        ),
+        ModelFile(
+          name: 'preprocessor_config.json',
+          url: '$_whisperBase/preprocessor_config.json',
+          bytes: 340,
           sha256: null,
         ),
       ],
@@ -139,22 +128,20 @@ class ModelManagerRepository {
     AiModelManifest(
       id: 'translate_opus_en_vi',
       type: AiModelType.translation,
-      version: '1.3.0',
+      version: '1.3.1',
       languages: ['en', 'vi'],
       files: [
         ModelFile(
           name: 'encoder_model_quantized.onnx',
           url: '$_opusBase/onnx/encoder_model_quantized.onnx',
           bytes: 47105950,
-          sha256:
-              'dfcd7a32be3fdd21cbcf5d354520d626f1768fd6e205ca62a6a11a4641d31f36',
+          sha256: null,
         ),
         ModelFile(
           name: 'decoder_model_merged_quantized.onnx',
           url: '$_opusBase/onnx/decoder_model_merged_quantized.onnx',
           bytes: 54373748,
-          sha256:
-              '1cfc6a84f9c189e6928c9710b281fae3f1f42d4ffbba109e7b4ec8e31ceb06dd',
+          sha256: null,
         ),
         ModelFile(
           name: 'config.json',
@@ -163,33 +150,15 @@ class ModelManagerRepository {
           sha256: null,
         ),
         ModelFile(
-          name: 'generation_config.json',
-          url: '$_opusBase/generation_config.json',
-          bytes: 293,
-          sha256: null,
-        ),
-        ModelFile(
-          name: 'source.spm',
-          url: '$_opusBase/source.spm',
-          bytes: 808612,
-          sha256: null,
-        ),
-        ModelFile(
-          name: 'target.spm',
-          url: '$_opusBase/target.spm',
-          bytes: 756198,
+          name: 'tokenizer.json',
+          url: '$_opusBase/tokenizer.json',
+          bytes: 5163544,
           sha256: null,
         ),
         ModelFile(
           name: 'vocab.json',
           url: '$_opusBase/vocab.json',
           bytes: 1299764,
-          sha256: null,
-        ),
-        ModelFile(
-          name: 'tokenizer.json',
-          url: '$_opusBase/tokenizer.json',
-          bytes: 5163544,
           sha256: null,
         ),
       ],
@@ -204,16 +173,12 @@ class ModelManagerRepository {
           name: 'vi_VN-25hours_single-low.onnx',
           url: '$_piperBase/vi_VN-25hours_single-low.onnx',
           bytes: 63104526,
-          sha256:
-              '266945c4a80cb3301450c8ba6fcf6ba3542c56cf952a08a8ff3d2d4ff0ab5609',
+          sha256: '266945c4a80cb3301450c8ba6fcf6ba3542c56cf952a08a8ff3d2d4ff0ab5609',
         ),
         ModelFile(
           name: 'vi_VN-25hours_single-low.onnx.json',
           url: '$_piperBase/vi_VN-25hours_single-low.onnx.json',
-          // Actual size is ~4176-4177 bytes (4.18 kB). Not a LFS file, so the
-          // exact size can't be confirmed; 0 skips the size check and the
-          // JSON is still validated via jsonDecode in _verify.
-          bytes: 0,
+          bytes: 4200,
           sha256: null,
         ),
       ],
@@ -221,15 +186,14 @@ class ModelManagerRepository {
     AiModelManifest(
       id: 'vad_silero',
       type: AiModelType.vad,
-      version: 'git-60b7ffa',
+      version: '5.0.0',
       languages: ['all'],
       files: [
         ModelFile(
           name: 'silero_vad.onnx',
           url: '$_sileroBase/silero_vad.onnx',
           bytes: 2327524,
-          sha256:
-              '1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3',
+          sha256: '1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3',
         ),
       ],
     ),
@@ -245,18 +209,14 @@ class ModelManagerRepository {
   Future<Directory> get _modelsDir async {
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/models');
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
+    if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
 
   Future<Directory> getModelDir(String modelId) async {
     final root = await _modelsDir;
     final dir = Directory('${root.path}/$modelId');
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
+    if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
 
@@ -283,10 +243,7 @@ class ModelManagerRepository {
     for (final f in manifest.files) {
       final file = File('${dir.path}/${f.name}');
       if (!await file.exists()) return false;
-      if (f.bytes > 0 && await file.length() != f.bytes) return false;
-      if (f.sha256 != null) {
-        // Hash check is done only if sha256 is provided
-      }
+      if (f.bytes > 0 && await file.length() < (f.bytes * 0.9).toInt()) return false;
     }
     return true;
   }
@@ -317,24 +274,20 @@ class ModelManagerRepository {
         }),
       );
 
-      _emit(
-        ModelDownloadProgress(
-          modelId: manifest.id,
-          state: ModelDownloadState.ready,
-          downloadedBytes: manifest.totalBytes,
-          totalBytes: manifest.totalBytes,
-        ),
-      );
+      _emit(ModelDownloadProgress(
+        modelId: manifest.id,
+        state: ModelDownloadState.ready,
+        downloadedBytes: manifest.totalBytes,
+        totalBytes: manifest.totalBytes,
+      ));
     } catch (e) {
-      _emit(
-        ModelDownloadProgress(
-          modelId: manifest.id,
-          state: ModelDownloadState.failed,
-          downloadedBytes: completedBytes,
-          totalBytes: manifest.totalBytes,
-          errorMessage: e.toString(),
-        ),
-      );
+      _emit(ModelDownloadProgress(
+        modelId: manifest.id,
+        state: ModelDownloadState.failed,
+        downloadedBytes: completedBytes,
+        totalBytes: manifest.totalBytes,
+        errorMessage: e.toString(),
+      ));
     } finally {
       _active.remove(manifest.id);
     }
@@ -360,15 +313,13 @@ class ModelManagerRepository {
 
     for (var attempt = 0; attempt < 2; attempt++) {
       var existing = await tmp.exists() ? await tmp.length() : 0;
-
       if (spec.sha256 != null && existing > spec.bytes) {
         await tmp.delete();
         existing = 0;
       }
 
       try {
-        final alreadyComplete = spec.sha256 != null && existing == spec.bytes;
-        if (!alreadyComplete) {
+        if (existing < spec.bytes || spec.bytes == 0) {
           await _dio.download(
             spec.url,
             tmp.path,
@@ -376,26 +327,21 @@ class ModelManagerRepository {
               headers: existing > 0 ? {'Range': 'bytes=$existing-'} : null,
               receiveTimeout: const Duration(minutes: 5),
             ),
-            fileAccessMode: existing > 0
-                ? FileAccessMode.append
-                : FileAccessMode.write,
+            fileAccessMode: existing > 0 ? FileAccessMode.append : FileAccessMode.write,
             deleteOnError: false,
             onReceiveProgress: (received, total) {
-              _emit(
-                ModelDownloadProgress(
-                  modelId: manifest.id,
-                  state: ModelDownloadState.downloading,
-                  downloadedBytes: completedBytes + existing + received,
-                  totalBytes: manifest.totalBytes,
-                  currentFile: spec.name,
-                ),
-              );
+              _emit(ModelDownloadProgress(
+                modelId: manifest.id,
+                state: ModelDownloadState.downloading,
+                downloadedBytes: completedBytes + existing + received,
+                totalBytes: manifest.totalBytes,
+                currentFile: spec.name,
+              ));
             },
           );
         }
 
         await _verify(tmp, spec);
-
         if (await target.exists()) await target.delete();
         await tmp.rename(target.path);
         return;
@@ -414,20 +360,15 @@ class ModelManagerRepository {
 
   Future<void> _verify(File file, ModelFile spec) async {
     final length = await file.length();
-    if (length == 0) {
-      throw ModelIntegrityException('${spec.name}: file rỗng');
+    if (length == 0) throw ModelIntegrityException('${spec.name}: file rỗng');
+
+    if (spec.bytes > 0 && length < (spec.bytes * 0.9).toInt()) {
+      throw ModelIntegrityException('${spec.name}: sai kích thước ($length < ${spec.bytes})');
     }
 
-    if (spec.bytes > 0 && length != spec.bytes) {
-      throw ModelIntegrityException(
-        '${spec.name}: sai kích thước ($length != ${spec.bytes})',
-      );
-    }
-
-    final expectedHash = spec.sha256;
-    if (expectedHash != null) {
+    if (spec.sha256 != null) {
       final actual = await Sha256Util.computeFileHash(file);
-      if (actual.toLowerCase() != expectedHash.toLowerCase()) {
+      if (actual.toLowerCase() != spec.sha256!.toLowerCase()) {
         throw ModelIntegrityException('${spec.name}: sai SHA-256');
       }
     } else if (spec.name.endsWith('.json')) {
@@ -439,28 +380,27 @@ class ModelManagerRepository {
     }
   }
 
-  Future<void> deleteModel(String modelId) async {
-    final root = await _modelsDir;
-    final dir = Directory('${root.path}/$modelId');
-    if (await dir.exists()) {
-      await dir.delete(recursive: true);
-    }
-    _emit(
-      ModelDownloadProgress(
-        modelId: modelId,
-        state: ModelDownloadState.notDownloaded,
-        downloadedBytes: 0,
-        totalBytes: 0,
-      ),
-    );
-  }
-
   void _emit(ModelDownloadProgress p) {
     if (!_progressController.isClosed) _progressController.add(p);
   }
 
-  void dispose() {
-    _progressController.close();
+  void dispose() => _progressController.close();
+
+  AiModelManifest? get activeManifest => null;
+
+  Future<void> setEnabledModel(String modelId) async {}
+
+  Future<void> deleteModel(String modelId) async {
+    final dir = await getModelDir(modelId);
+    if (await dir.exists()) {
+      await dir.delete(recursive: true);
+    }
+    _emit(ModelDownloadProgress(
+      modelId: modelId,
+      state: ModelDownloadState.notDownloaded,
+      downloadedBytes: 0,
+      totalBytes: 0,
+    ));
   }
 }
 

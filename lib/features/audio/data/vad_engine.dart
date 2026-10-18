@@ -34,11 +34,12 @@ class LocalVadEngine implements VoiceActivityDetector {
   LocalVadEngine(
     this._modelRepository,
     this._diagnostics, {
-    this.threshold = 0.5,
-    this.minSpeechDuration = const Duration(milliseconds: 250),
-    this.maxMergeGap = const Duration(milliseconds: 300),
-    this.preRollDuration = const Duration(milliseconds: 200),
-    this.maxSpeechDuration = const Duration(seconds: 29),
+    this.threshold = 0.3, // Nhạy hơn để bắt được giọng nói nhỏ sau nhạc
+    this.minSpeechDuration = const Duration(milliseconds: 500), // Tăng độ dài tối thiểu để STT có đủ dữ liệu
+    this.maxMergeGap = const Duration(milliseconds: 1000), // Gom các khoảng nghỉ dài hơn vào cùng 1 câu
+    this.preRollDuration = const Duration(milliseconds: 500),
+    this.maxSpeechDuration = const Duration(seconds: 20),
+    this.postRollDuration = const Duration(milliseconds: 600),
   });
 
   final ModelManagerRepository _modelRepository;
@@ -48,6 +49,7 @@ class LocalVadEngine implements VoiceActivityDetector {
   final Duration maxMergeGap;
   final Duration preRollDuration;
   final Duration maxSpeechDuration;
+  final Duration postRollDuration;
 
   static const String modelId = 'vad_silero';
   static const int _contextSize = 64;
@@ -180,15 +182,18 @@ class LocalVadEngine implements VoiceActivityDetector {
 
           preRollBuffer.clear();
 
-          // Enforce max duration for Whisper (30s limit)
+          // Enforce max duration for Whisper (15s limit is safer for Tiny model)
           if (active.end - active.start >= maxSpeechDuration) {
-            _diagnostics.log('VAD', 'Segment reached max duration (30s): ${active.start.inMilliseconds}ms - ${active.end.inMilliseconds}ms');
+            _diagnostics.log('VAD', 'Segment reached max duration (${maxSpeechDuration.inSeconds}s): ${active.start.inMilliseconds}ms - ${active.end.inMilliseconds}ms');
             yield SpeechSegment(
               start: active.start,
               end: active.end,
               chunks: List.unmodifiable(active.chunks),
             );
             active = null;
+            pendingGap = null;
+            // Quan trọng: Sau khi cắt cưỡng ép hoặc kết thúc segment,
+            // reset state VAD hoàn toàn để tránh rò rỉ tín hiệu sang segment sau.
             _resetState();
           }
         } else {
@@ -203,6 +208,13 @@ class LocalVadEngine implements VoiceActivityDetector {
 
             if (pendingGap.end - pendingGap.start > maxMergeGap) {
               if (active.end - active.start >= minSpeechDuration) {
+                // Thêm một phần post-roll để tránh bị cụt chữ cuối
+                final postRollChunks = (postRollDuration.inMilliseconds / windowDuration.inMilliseconds).round();
+                if (pendingGap.chunks.isNotEmpty) {
+                  active.chunks.addAll(pendingGap.chunks.take(min(postRollChunks, pendingGap.chunks.length)));
+                  active.end = active.chunks.last.pts + windowDuration;
+                }
+
                 _diagnostics.log('VAD', 'Speech segment detected: ${active.start.inMilliseconds}ms - ${active.end.inMilliseconds}ms (${active.chunks.length} chunks)');
                 yield SpeechSegment(
                   start: active.start,
@@ -212,6 +224,8 @@ class LocalVadEngine implements VoiceActivityDetector {
               }
               active = null;
               pendingGap = null;
+              // Reset state sau khi một cụm hội thoại kết thúc (yên lặng đủ lâu)
+              _resetState();
             }
           } else {
             preRollBuffer.add(currentChunk);
@@ -265,7 +279,7 @@ class LocalVadEngine implements VoiceActivityDetector {
 
       if (outputVal != null && stateVal != null) {
         final probability = (outputVal[0] as List)[0] as double;
-        _updateState(_state, stateVal as List<List<List<double>>>);
+        _updateState(_state, stateVal);
 
         // Update context with the last 64 samples of the current window
         final int16Data = bytes.buffer.asInt16List();
@@ -306,15 +320,20 @@ class LocalVadEngine implements VoiceActivityDetector {
     }
   }
 
-  void _updateState(Float32List state, List<List<List<double>>> newValue) {
+  void _updateState(Float32List state, List<dynamic> newValue) {
     int idx = 0;
-    for (var i = 0; i < newValue.length; i++) {
-      for (var j = 0; j < newValue[i].length; j++) {
-        for (var k = 0; k < newValue[i][j].length; k++) {
-          state[idx++] = newValue[i][j][k].toDouble();
+    void traverse(dynamic item) {
+      if (item is List) {
+        for (final child in item) {
+          traverse(child);
+        }
+      } else if (item is num) {
+        if (idx < state.length) {
+          state[idx++] = item.toDouble();
         }
       }
     }
+    traverse(newValue);
   }
 
   bool _isSpeechEnergy(Uint8List bytes) {

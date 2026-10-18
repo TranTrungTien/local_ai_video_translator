@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,6 +7,7 @@ import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../../core/network/dio_provider.dart';
 import '../../../core/utils/cancellation_token.dart';
 import '../../audio/data/pcm_audio_extractor.dart';
+import '../../audio/data/ffmpeg_audio_extractor.dart';
 import '../../audio/data/vad_engine.dart';
 import '../../settings/data/model_manager_repository.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
@@ -272,7 +272,7 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       _isTranslatingCues = false;
       _activeTrack = null;
 
-      if (source.kind == ResolvedSourceKind.embedded) {
+      if (source.kind == MediaKind.embedded) {
         state = state.copyWith(
           activeSourceStrategy: 'Ready (Enable AI to start)',
         );
@@ -325,12 +325,9 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     if (!await repo.isModelDownloaded(LocalTranslationEngine.modelId)) {
       missing.add('Translation');
     }
-    // TTS model is temporarily not required as dubbing is disabled.
-    /*
     if (!await repo.isModelDownloaded(LocalTextToSpeechEngine.modelId)) {
       missing.add('TTS');
     }
-    */
     if (!await repo.isModelDownloaded(LocalVadEngine.modelId)) {
       missing.add('VAD');
     }
@@ -496,8 +493,10 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
 
         _diagnostics.log('AIScheduler', 'Adding ${translated.length} segments to buffer at ${speech.start.inMilliseconds}ms');
         _timelineBuffer.addSegments(translated, metadata: speech.start);
-        // Dubbing is temporarily disabled as per request, only subtitles are processed.
-        // unawaited(_synthesizeBatch(translated, gen, token));
+
+        // Kích hoạt Dubbing: Tổng hợp giọng nói song song với hiển thị phụ đề
+        unawaited(_synthesizeBatch(translated, gen, token));
+
         _consecutiveFailures = 0;
 
         final duration = activeSource?.capability.duration;
@@ -553,8 +552,12 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
         ? (_timelineBuffer.lastProcessedSegment ?? _timelineBuffer.segmentAt(pts))
         : _timelineBuffer.segmentAt(pts);
 
-    if (activeSeg != null && !isCaptureMode) {
-      _diagnostics.log('AIScheduler', 'Active Segment at ${pts.inMilliseconds}ms: "${activeSeg.text}"', level: LogLevel.debug);
+    // Xóa log spam ở mức DEBUG mỗi khi vị trí phát thay đổi (thường là 16-33ms)
+    // Chỉ log khi segment thực sự thay đổi
+    if (activeSeg != state.activeSegment && activeSeg != null) {
+      if (!isCaptureMode) {
+         _diagnostics.log('AIScheduler', 'Active Segment changed: "${activeSeg.text}"', level: LogLevel.debug);
+      }
     }
 
     final dubSeg = _dubbingRepository.getSegmentAt(pts);
@@ -625,7 +628,7 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
 
   Future<void> startAiPipelineForEmbedded() async {
     final source = activeSource;
-    if (source == null || source.kind != ResolvedSourceKind.embedded) return;
+    if (source == null || source.kind != MediaKind.embedded) return;
     if (state.activeSourceStrategy == 'AI Pipeline (VAD -> STT -> Translation)') {
       return;
     }
@@ -788,17 +791,11 @@ final ttsEngineProvider = Provider<TextToSpeechEngine>((ref) {
 });
 
 final pcmAudioExtractorProvider = Provider<PcmAudioExtractor>((ref) {
-  if (Platform.isAndroid) {
-    return NativePcmAudioExtractor(
-      ref.watch(diagnosticsServiceProvider),
-      // Dùng để phân biệt EOF thật với stream bị cắt giữa chừng (nguồn remote).
-      durationProvider: () {
-        final d = ref.read(nativeMediaSessionProvider).currentSnapshot.duration;
-        return (d != null && d > Duration.zero) ? d : null;
-      },
-    );
-  }
-  return const DefaultPcmAudioExtractor();
+  final diagnostics = ref.watch(diagnosticsServiceProvider);
+
+  // Đối với video/file, FFmpeg là lựa chọn tốt nhất nhờ bộ lọc xử lý âm thanh mạnh mẽ.
+  // NativePcmAudioExtractor chỉ nên dùng cho capture hệ thống (Embedded).
+  return FfmpegPcmAudioExtractor(diagnostics);
 });
 
 final vadEngineProvider = Provider<VoiceActivityDetector>((ref) {

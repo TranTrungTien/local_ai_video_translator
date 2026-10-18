@@ -43,7 +43,7 @@ class AndroidMediaObserver {
       kind = MediaKind.hls;
     } else if (path.endsWith('.mpd')) {
       kind = MediaKind.dash;
-    } else if (['.mp4', '.webm', '.mkv', '.m4v'].any(path.endsWith)) {
+    } else if (['.mp4', '.webm', '.mkv', '.m4v', '.mov'].any(path.endsWith)) {
       kind = MediaKind.progressive;
     }
 
