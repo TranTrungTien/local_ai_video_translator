@@ -149,7 +149,7 @@ class _EmbeddedPlayerViewState extends ConsumerState<EmbeddedPlayerView> {
 
         const send = (value) => {
           if (typeof value !== 'string' || value.length < 10) return;
-          if (RegExp(r'\.(m3u8|mpd|mp4|webm|mkv|mov|m4v)', caseSensitive: false).hasMatch(value)) {
+           if (RegExp('\\.(m3u8|mpd|mp4|webm|mkv|mov|m4v)', 'i').test(value)) {
             MediaObserver.postMessage(value);
           }
         };

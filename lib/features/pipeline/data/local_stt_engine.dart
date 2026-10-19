@@ -28,6 +28,7 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
   static const int _sotToken = 50258;
   static const int _enToken = 50259;
   static const int _transcribeToken = 50359;
+  static const int _noTimestampsToken = 50363;
   static const int _eosToken = 50257;
   static const int _maxNewTokens = 224;
 
@@ -244,9 +245,13 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
       _sotToken,
       _enToken,
       _transcribeToken,
-      // _noTimestampsToken, // Tạm thời bỏ để xem AI có tự ngắt tốt hơn không
+      _noTimestampsToken,
     ];
     final promptLength = tokens.length;
+    final tokenCounts = Int32List(51865);
+    for (final token in tokens) {
+      if (token >= 0 && token < tokenCounts.length) tokenCounts[token]++;
+    }
 
     final inputNames = _decoderSession!.inputNames;
 
@@ -348,14 +353,17 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
           const double repetitionPenalty = 1.15;
 
           for (int j = 0; j < lastLogits.length; j++) {
-            if (j > _eosToken && j != _eosToken) continue;
-
             if (i == 0 && j == _eosToken) continue;
+            // With <|notimestamps|> in the prompt, timestamp tokens must not be
+            // generated. Keep text + EOS, but do not blanket-drop all Whisper
+            // special IDs because language/task IDs also live above EOS.
+            if (j >= 50364) continue;
 
             double val = (lastLogits[j] as num).toDouble();
 
             // Chỉ apply penalty nhẹ nếu token đã xuất hiện nhiều lần
-            final int occurrences = tokens.where((t) => t == j).length;
+            final int occurrences =
+                j < tokenCounts.length ? tokenCounts[j] : 0;
             if (occurrences >= 3) {
               if (val > 0) {
                 val /= repetitionPenalty;
@@ -375,6 +383,9 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
           break;
         }
           tokens.add(nextToken);
+          if (nextToken >= 0 && nextToken < tokenCounts.length) {
+            tokenCounts[nextToken]++;
+          }
 
           if (i % 20 == 0 && i > 0) {
             _diagnostics.log('STT', 'Generating... step $i, last token: $nextToken');
@@ -402,7 +413,11 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
           }
 
           if (tokens.length > 5 && nextToken < 100) { // Các token nhỏ thường là dấu câu
-            final repeatCount = tokens.reversed.take(5).where((t) => t == nextToken).length;
+            int repeatCount = 0;
+            final startIdx = tokens.length - 1;
+            for (int k = startIdx; k >= startIdx - 4 && k >= 0; k--) {
+              if (tokens[k] == nextToken) repeatCount++;
+            }
             if (repeatCount >= 4) {
               _diagnostics.log('STT', 'Punctuation loop detected, breaking early.', level: LogLevel.warning);
               break;

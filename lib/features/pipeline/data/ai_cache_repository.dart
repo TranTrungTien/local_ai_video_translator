@@ -178,10 +178,9 @@ class AiCacheRepository {
   }
 
   Future<int> getTotalCacheSizeBytes() async {
+    // Storage quota is a disk quota. Memory records mirror the same entries and
+    // must not be counted again, otherwise eviction happens too early.
     int total = 0;
-    for (final rec in _memoryCache.values) {
-      total += rec.sizeBytes;
-    }
 
     try {
       final dir = await _cacheDir;

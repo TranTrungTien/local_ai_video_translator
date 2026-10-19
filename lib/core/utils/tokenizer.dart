@@ -80,7 +80,9 @@ class SimpleTokenizer {
         .map((t) => _invVocab[t] ?? '')
         .where((s) => !s.startsWith('<|') && s != '</s>' && s != '<unk>') // Filter special tokens
         .join('')
+        .replaceAll('Ġ', ' ')
         .replaceAll('\u2581', ' ')
+        .replaceAll('  ', ' ')
         .trim();
   }
 }

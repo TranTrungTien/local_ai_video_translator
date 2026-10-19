@@ -98,7 +98,7 @@ class FfmpegPcmAudioExtractor implements PcmAudioExtractor {
     args.addAll([
       '-vn',
       '-af',
-      'highpass=f=80,lowpass=f=8000,afftdn=nf=-30,dynaudnorm=p=0.9:s=5,speechnorm=e=6:p=0.5',
+      'pan=mono|c0=0.5*c0+0.5*c1,highpass=f=80,lowpass=f=7500,afftdn=nf=-25',
       '-ac',
       '$channels',
       '-ar',

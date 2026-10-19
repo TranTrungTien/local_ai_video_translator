@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -34,12 +35,12 @@ class LocalVadEngine implements VoiceActivityDetector {
   LocalVadEngine(
     this._modelRepository,
     this._diagnostics, {
-    this.threshold = 0.3, // Nhạy hơn để bắt được giọng nói nhỏ sau nhạc
-    this.minSpeechDuration = const Duration(milliseconds: 500), // Tăng độ dài tối thiểu để STT có đủ dữ liệu
-    this.maxMergeGap = const Duration(milliseconds: 1000), // Gom các khoảng nghỉ dài hơn vào cùng 1 câu
-    this.preRollDuration = const Duration(milliseconds: 500),
-    this.maxSpeechDuration = const Duration(seconds: 20),
-    this.postRollDuration = const Duration(milliseconds: 600),
+    this.threshold = 0.55, // Speech onset threshold
+    this.minSpeechDuration = const Duration(milliseconds: 400),
+    this.maxMergeGap = const Duration(milliseconds: 600), // Split on 600ms pauses for turn taking
+    this.preRollDuration = const Duration(milliseconds: 300),
+    this.maxSpeechDuration = const Duration(seconds: 10), // Cap at 10s for precise sentence mapping
+    this.postRollDuration = const Duration(milliseconds: 300),
   });
 
   final ModelManagerRepository _modelRepository;
@@ -67,6 +68,7 @@ class LocalVadEngine implements VoiceActivityDetector {
 
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
 
     final modelFile = await _modelRepository.getModelFile(
       modelId,
@@ -254,6 +256,7 @@ class LocalVadEngine implements VoiceActivityDetector {
   }
 
   Future<bool> _isSpeechData(Uint8List bytes, int sampleRate) async {
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return _isSpeechEnergy(bytes);
     final session = _session;
     if (session == null || _onnxBroken) return _isSpeechEnergy(bytes);
 

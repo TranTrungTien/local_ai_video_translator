@@ -165,21 +165,22 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
 
         if (outputTensor.isNotEmpty) {
           final List<double> flatData = [];
-          // Piper thường output [1, T] hoặc [1, T, 1]
-          if (outputTensor[0] is List) {
-             final firstDim = outputTensor[0] as List;
-             if (firstDim.isNotEmpty && firstDim[0] is List) {
-               // [1, T, 1] case
-               for (var frame in firstDim) {
-                 flatData.add((frame as List)[0] as double);
-               }
-             } else {
-               // [1, T] case
-               flatData.addAll(firstDim.map((e) => (e as num).toDouble()));
-             }
-          } else {
-             flatData.addAll(outputTensor.map((e) => (e as num).toDouble()));
+
+          void extractFloats(dynamic node) {
+            if (node is Float32List) {
+              flatData.addAll(node);
+            } else if (node is Int16List) {
+              flatData.addAll(node.map((e) => e / 32768.0));
+            } else if (node is List) {
+              for (final child in node) {
+                extractFloats(child);
+              }
+            } else if (node is num) {
+              flatData.add(node.toDouble());
+            }
           }
+
+          extractFloats(outputTensor);
 
           final floatAudio = Float32List.fromList(flatData);
           var pcm16 = _float32ToPcm16(floatAudio);

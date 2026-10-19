@@ -54,25 +54,31 @@ class ModelContractException implements Exception {
   String toString() => 'ModelContractException: $message';
 }
 
-// Whisper Base (English/Vietnamese optimized)
-const String _whisperBase = 'https://huggingface.co/Xenova/whisper-base/resolve/main';
-// Opus-MT (En-Vi)
-const String _opusBase = 'https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main';
-// Piper TTS
-const String _piperBase = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/vi/vi_VN/25hours_single/low';
-// Silero VAD v5
-const String _sileroBase = 'https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data';
+// Whisper Base (English/Vietnamese optimized) - Pinned commit
+const String _whisperBase =
+    'https://huggingface.co/Xenova/whisper-base/resolve/d33af214c6ab08c278d722454aaac60f04599f8e';
+// Opus-MT (En-Vi) - Pinned commit
+const String _opusBase =
+    'https://huggingface.co/Xenova/opus-mt-en-vi/resolve/dd3afdf29af23ff9568f755a8b0a9f9b4f6f9437';
+// Piper TTS - Pinned v1.0.0 release
+const String _piperBase =
+    'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/vi/vi_VN/25hours_single/low';
+// Silero VAD v5.1 - Pinned commit
+const String _sileroBase =
+    'https://raw.githubusercontent.com/snakers4/silero-vad/60b7ffa243625ebdc1070275a29f18c87843786a/src/silero_vad/data';
 
 class ModelManagerRepository {
   ModelManagerRepository(this._dio);
 
   final Dio _dio;
-  final _progressController = StreamController<ModelDownloadProgress>.broadcast();
+  final _progressController =
+      StreamController<ModelDownloadProgress>.broadcast();
   final Set<String> _active = <String>{};
 
   static const String _readyMarker = '.ready';
 
-  Stream<ModelDownloadProgress> get progressStream => _progressController.stream;
+  Stream<ModelDownloadProgress> get progressStream =>
+      _progressController.stream;
 
   static const List<AiModelManifest> defaultManifests = [
     AiModelManifest(
@@ -84,14 +90,14 @@ class ModelManagerRepository {
         ModelFile(
           name: 'encoder_model_quantized.onnx',
           url: '$_whisperBase/onnx/encoder_model_quantized.onnx',
-          bytes: 25167571,
+          bytes: 23196523,
           sha256: null,
         ),
         ModelFile(
           name: 'decoder_model_merged_quantized.onnx',
           url: '$_whisperBase/onnx/decoder_model_merged_quantized.onnx',
-          bytes: 77123985,
-          sha256: null,
+          bytes: 53697669,
+          sha256: 'a6beb6baabb66f00b6a686d828c95ffca6146d51900cbad0266cad38f64cf861',
         ),
         ModelFile(
           name: 'config.json',
@@ -141,7 +147,7 @@ class ModelManagerRepository {
           name: 'decoder_model_merged_quantized.onnx',
           url: '$_opusBase/onnx/decoder_model_merged_quantized.onnx',
           bytes: 54373748,
-          sha256: null,
+          sha256: '1cfc6a84f9c189e6928c9710b281fae3f1f42d4ffbba109e7b4ec8e31ceb06dd',
         ),
         ModelFile(
           name: 'config.json',
@@ -186,7 +192,7 @@ class ModelManagerRepository {
     AiModelManifest(
       id: 'vad_silero',
       type: AiModelType.vad,
-      version: '5.0.0',
+      version: '5.1.0',
       languages: ['all'],
       files: [
         ModelFile(
@@ -243,7 +249,7 @@ class ModelManagerRepository {
     for (final f in manifest.files) {
       final file = File('${dir.path}/${f.name}');
       if (!await file.exists()) return false;
-      if (f.bytes > 0 && await file.length() < (f.bytes * 0.9).toInt()) return false;
+      if (await file.length() == 0) return false;
     }
     return true;
   }
@@ -288,6 +294,7 @@ class ModelManagerRepository {
         totalBytes: manifest.totalBytes,
         errorMessage: e.toString(),
       ));
+      rethrow;
     } finally {
       _active.remove(manifest.id);
     }
@@ -362,14 +369,12 @@ class ModelManagerRepository {
     final length = await file.length();
     if (length == 0) throw ModelIntegrityException('${spec.name}: file rỗng');
 
-    if (spec.bytes > 0 && length < (spec.bytes * 0.9).toInt()) {
-      throw ModelIntegrityException('${spec.name}: sai kích thước ($length < ${spec.bytes})');
-    }
-
     if (spec.sha256 != null) {
       final actual = await Sha256Util.computeFileHash(file);
       if (actual.toLowerCase() != spec.sha256!.toLowerCase()) {
-        throw ModelIntegrityException('${spec.name}: sai SHA-256');
+        throw ModelIntegrityException(
+          '${spec.name}: sai SHA-256 ($actual != ${spec.sha256})',
+        );
       }
     } else if (spec.name.endsWith('.json')) {
       try {

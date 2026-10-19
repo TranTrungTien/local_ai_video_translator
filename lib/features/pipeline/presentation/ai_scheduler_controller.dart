@@ -325,9 +325,7 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
     if (!await repo.isModelDownloaded(LocalTranslationEngine.modelId)) {
       missing.add('Translation');
     }
-    if (!await repo.isModelDownloaded(LocalTextToSpeechEngine.modelId)) {
-      missing.add('TTS');
-    }
+    // TTS is optional: subtitles must work even when the dubbing model is absent.
     if (!await repo.isModelDownloaded(LocalVadEngine.modelId)) {
       missing.add('VAD');
     }
@@ -377,10 +375,18 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
       final nextStart = i + 20 < raw.length ? raw[i + 20].start : const Duration(days: 1);
       _timelineBuffer.markSubtitleDocumentComplete(nextStart);
 
-      unawaited(_synthesizeBatch(processedBatch, gen, _activeToken!));
+      if (await repoIsTtsReady()) {
+        unawaited(_synthesizeBatch(processedBatch, gen, _activeToken!));
+      }
       _updateBufferState();
     }
     return true;
+  }
+
+  Future<bool> repoIsTtsReady() async {
+    return _ref.read(modelManagerRepositoryProvider).isModelDownloaded(
+      LocalTextToSpeechEngine.modelId,
+    );
   }
 
   Future<void> _synthesizeBatch(
@@ -495,7 +501,9 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
         _timelineBuffer.addSegments(translated, metadata: speech.start);
 
         // Kích hoạt Dubbing: Tổng hợp giọng nói song song với hiển thị phụ đề
-        unawaited(_synthesizeBatch(translated, gen, token));
+        if (await repoIsTtsReady()) {
+          unawaited(_synthesizeBatch(translated, gen, token));
+        }
 
         _consecutiveFailures = 0;
 
@@ -725,29 +733,55 @@ class AiSchedulerController extends StateNotifier<AiSchedulerState> {
 
     for (final seg in segments) {
       final sentences = seg.text.split(sentenceEnd);
-      if (sentences.length <= 1) {
-        result.add(seg);
+      if (sentences.isEmpty) continue;
+
+      if (sentences.length == 1) {
+        final clean = seg.text.trim();
+        if (clean.isEmpty) continue;
+
+        final charCount = clean.length;
+        // Natural reading speed: ~65ms per character + 600ms base padding
+        final naturalMs = (charCount * 65) + 600;
+        final maxDurationMs = (seg.end - seg.start).inMilliseconds;
+        final activeMs = naturalMs.clamp(1200, maxDurationMs);
+
+        result.add(TimedTextSegment(
+          start: seg.start,
+          end: seg.start + Duration(milliseconds: activeMs.toInt()),
+          text: clean,
+          language: seg.language,
+        ));
         continue;
       }
 
-      final totalChars = seg.text.length;
-      final totalDuration = seg.end - seg.start;
+      final totalChars = seg.text.isNotEmpty ? seg.text.length : 1;
+      final totalDurationMs = (seg.end - seg.start).inMilliseconds;
       var currentStart = seg.start;
 
-      for (final s in sentences) {
-        final cleanS = s.trim();
+      for (var i = 0; i < sentences.length; i++) {
+        final cleanS = sentences[i].trim();
         if (cleanS.isEmpty) continue;
-        final duration = Duration(
-          milliseconds: (totalDuration.inMilliseconds * (s.length / totalChars)).round(),
-        );
-        final end = currentStart + duration;
+
+        final charRatio = cleanS.length / totalChars;
+        final allocatedMs = (totalDurationMs * charRatio).round();
+
+        // Calculate natural display time to leave silence gaps when characters stop speaking
+        final naturalMs = (cleanS.length * 65) + 500;
+        final activeMs = naturalMs.clamp(1000, allocatedMs > 1000 ? allocatedMs : 1000);
+
+        final end = currentStart + Duration(milliseconds: activeMs.toInt());
+        final boundedEnd = end > seg.end ? seg.end : end;
+
         result.add(TimedTextSegment(
           start: currentStart,
-          end: end > seg.end ? seg.end : end,
+          end: boundedEnd,
           text: cleanS,
           language: seg.language,
         ));
-        currentStart = end;
+
+        // Advance currentStart with a small pause gap (200ms) before the next sentence
+        currentStart = currentStart + Duration(milliseconds: allocatedMs + 200);
+        if (currentStart >= seg.end) break;
       }
     }
     return result;
