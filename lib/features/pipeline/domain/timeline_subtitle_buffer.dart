@@ -24,7 +24,8 @@ class TimelineSubtitleBuffer {
     _floor = floor;
     _vadProgress = floor;
     _watermark = floor;
-    _segments.removeWhere((s) => s.end < floor);
+    // Tắt việc xóa segment để giữ lịch sử phục vụ export SRT
+    // _segments.removeWhere((s) => s.end < floor);
     _pendingSegments.clear();
     _updateWatermark();
   }
@@ -36,9 +37,10 @@ class TimelineSubtitleBuffer {
 
   void reportProgress(Duration pts, {Duration? activeSpeechStart}) {
     if (_mode != TimelineReadinessMode.liveAi) return;
-    // Điểm tiến triển thực tế của VAD là pts (nơi nó đã quét qua).
-    // Chúng ta cho phép watermark tiến tới pts để tránh Gate pause video khi đang có người nói.
-    if (pts > _vadProgress) _vadProgress = pts;
+    // Cập nhật tiến độ VAD. Ngay cả khi không có tiếng, watermark vẫn có thể tiến tới pts
+    if (pts > _vadProgress) {
+      _vadProgress = pts;
+    }
     _updateWatermark();
   }
 
@@ -54,19 +56,43 @@ class TimelineSubtitleBuffer {
   }
 
   void addSegments(List<TimedTextSegment> newSegments, {Duration? metadata}) {
+    // metadata chính là 'start' của pending range, cần xóa nó để watermark có thể tiến tiếp
+    if (metadata != null) {
+      _pendingSegments.removeWhere((p) => p.start == metadata);
+    }
+
     if (newSegments.isNotEmpty) {
       for (var s in newSegments) {
         _diagnostics.log('SUB_BUFFER', 'Adding segment: [${s.start.inMilliseconds}ms - ${s.end.inMilliseconds}ms] "${s.text}"');
       }
     }
-    // metadata is the 'start' of the pending range
-    if (metadata != null) {
-      _pendingSegments.removeWhere((p) => p.start == metadata);
-    }
     _segments.addAll(newSegments.where((s) => s.end >= _floor));
     _segments.sort((a, b) => a.start.compareTo(b.start));
+    _fixOverlaps();
     _deduplicate();
     _updateWatermark();
+  }
+
+  void _fixOverlaps() {
+    if (_segments.length < 2) return;
+    for (int i = 0; i < _segments.length - 1; i++) {
+      final current = _segments[i];
+      final next = _segments[i + 1];
+
+      // Nếu segment hiện tại kết thúc sau khi segment tiếp theo bắt đầu
+      if (current.end > next.start) {
+        // Thu ngắn segment hiện tại lại, chừa ra 50ms nghỉ
+        final newEnd = next.start - const Duration(milliseconds: 50);
+
+        // Cập nhật lại segment (do TimedTextSegment là immutable nên phải tạo mới)
+        _segments[i] = TimedTextSegment(
+          start: current.start,
+          end: newEnd > current.start ? newEnd : current.start + const Duration(milliseconds: 100),
+          text: current.text,
+          language: current.language,
+        );
+      }
+    }
   }
 
   void _deduplicate() {
@@ -106,19 +132,27 @@ class TimelineSubtitleBuffer {
     for (final range in allKnown) {
       if (range.end <= current) continue;
 
-      // If there's a gap larger than 100ms, we check if VAD has cleared this gap.
-      if (range.start > current + const Duration(milliseconds: 100)) {
-        if (range.start > _vadProgress) {
-          // VAD hasn't reached the next segment yet, so we're only sure until 'current'.
+      // Nếu có khoảng trống (gap), kiểm tra xem VAD đã quét qua chưa
+      if (range.start > current + const Duration(milliseconds: 10)) {
+        if (_vadProgress > current) {
+          // VAD đã quét qua một phần hoặc toàn bộ khoảng trống
+          final clearedUntil = range.start < _vadProgress ? range.start : _vadProgress;
+          current = clearedUntil;
+
+          if (current < range.start) {
+            // VAD chưa quét hết khoảng trống tới segment tiếp theo
+            _watermark = current;
+            return;
+          }
+        } else {
+          // VAD chưa đạt tới mốc 'current', kẹt tại đây
           _watermark = current;
           return;
         }
-        // VAD cleared the gap, move 'current' to start of this range.
-        current = range.start;
       }
 
       if (range.isPending) {
-        // We hit a segment that is still being processed.
+        // Gặp segment đang xử lý, dừng watermark tại đây
         _watermark = current;
         return;
       }
@@ -144,19 +178,31 @@ class TimelineSubtitleBuffer {
     final cutoff = currentPts - const Duration(seconds: 60);
     if (cutoff <= _floor) return;
     _floor = cutoff;
-    _segments.removeWhere((seg) => seg.end < cutoff);
+    // Tắt việc xóa segment để giữ lịch sử phục vụ export SRT
+    // _segments.removeWhere((seg) => seg.end < cutoff);
     _pendingSegments.removeWhere((p) => p.end < cutoff);
     if (_vadProgress < _floor) _vadProgress = _floor;
     if (_watermark < _floor) _watermark = _floor;
     _updateWatermark();
   }
 
-  void flushObsolete(Duration beforePts) {
-    _floor = beforePts;
-    _segments.removeWhere((seg) => seg.end < beforePts);
+  void handleSeek(Duration newPts) {
     _pendingSegments.clear();
-    _vadProgress = beforePts;
-    _watermark = beforePts;
+    // Remove segments that overlap or are after the seek point to avoid "ghosts"
+    // when we re-process this area.
+    _segments.removeWhere((seg) => seg.end > newPts);
+
+    // Reset or advance VAD progress to the seek point.
+    // This allows the watermark to jump to the newPts even if there's a gap behind it,
+    // because _updateWatermark will see that VAD has "cleared" up to newPts.
+    _vadProgress = newPts;
+
+    // If we seek back before our current floor, we must expand the floor to ensure
+    // we track the timeline correctly from the new start point.
+    if (newPts < _floor) {
+      _floor = newPts;
+    }
+
     _mode = TimelineReadinessMode.liveAi;
     _updateWatermark();
   }

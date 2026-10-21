@@ -36,11 +36,11 @@ class LocalVadEngine implements VoiceActivityDetector {
     this._modelRepository,
     this._diagnostics, {
     this.threshold = 0.55, // Speech onset threshold
-    this.minSpeechDuration = const Duration(milliseconds: 400),
-    this.maxMergeGap = const Duration(milliseconds: 600), // Split on 600ms pauses for turn taking
-    this.preRollDuration = const Duration(milliseconds: 300),
-    this.maxSpeechDuration = const Duration(seconds: 10), // Cap at 10s for precise sentence mapping
-    this.postRollDuration = const Duration(milliseconds: 300),
+    this.minSpeechDuration = const Duration(milliseconds: 300),
+    this.maxMergeGap = const Duration(milliseconds: 1000), // Cho phép ngắt nghỉ 1s giữa các câu
+    this.preRollDuration = const Duration(milliseconds: 150), // Giảm để tránh hiện quá sớm
+    this.maxSpeechDuration = const Duration(seconds: 12), // Tăng nhẹ để chứa được hội thoại dài hơn
+    this.postRollDuration = const Duration(milliseconds: 200),
   });
 
   final ModelManagerRepository _modelRepository;
