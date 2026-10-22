@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show Platform, File;
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'performance_monitor.dart';
 
@@ -38,37 +41,60 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
 
-    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
-
-    final modelFile = await _modelRepository.getModelFile(modelId, modelFileName);
-    if (!await modelFile.exists()) {
-      throw ModelDownloadException('Piper TTS model missing. Please download it in settings.');
-    }
-
-    // Try to load accompanying config if exists
-    final dir = await _modelRepository.getModelDir(modelId);
-    final configFile = File('${dir.path}/$modelFileName.json');
-
-    if (await configFile.exists()) {
-      try {
-        final configContent = await configFile.readAsString();
-        final config = jsonDecode(configContent) as Map<String, dynamic>;
-        final rawMap = config['phoneme_id_map'] as Map<String, dynamic>?;
-        if (rawMap != null) {
-          _phonemeIdMap = rawMap.map((key, value) {
-            if (value is List) {
-              return MapEntry(key, List<int>.from(value.map((e) => e as int)));
-            }
-            return MapEntry(key, [value as int]);
-          });
-        }
-      } catch (e) {
-        _diagnostics.log('TTS_ENGINE', 'Failed to load phoneme map: $e', level: LogLevel.warning);
-      }
-    }
+    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) return;
 
     final sessionOptions = OrtSessionOptions();
-    _session = await OnnxRuntime().createSession(modelFile.path, options: sessionOptions);
+
+    if (kIsWeb) {
+      final modelBytes = await _modelRepository.getModelFileBytes(modelId, modelFileName);
+      if (modelBytes == null) {
+        throw ModelDownloadException('Piper TTS model missing.');
+      }
+
+      final configBytes = await _modelRepository.getModelFileBytes(modelId, '$modelFileName.json');
+      if (configBytes != null) {
+        _parseConfig(utf8.decode(configBytes));
+      }
+
+      final blob = web.Blob([modelBytes.toJS].toJS, web.BlobPropertyBag(type: 'application/octet-stream'));
+      final modelUrl = web.URL.createObjectURL(blob);
+      try {
+        _session = await OnnxRuntime().createSession(modelUrl, options: sessionOptions);
+      } finally {
+        web.URL.revokeObjectURL(modelUrl);
+      }
+    } else {
+      final modelFile = await _modelRepository.getModelFile(modelId, modelFileName);
+      if (!await modelFile.exists()) {
+        throw ModelDownloadException('Piper TTS model missing. Please download it in settings.');
+      }
+
+      final dir = await _modelRepository.getModelDir(modelId);
+      final configFile = File('${dir.path}/$modelFileName.json');
+
+      if (await configFile.exists()) {
+        _parseConfig(await configFile.readAsString());
+      }
+
+      _session = await OnnxRuntime().createSession(modelFile.path, options: sessionOptions);
+    }
+  }
+
+  void _parseConfig(String content) {
+    try {
+      final config = jsonDecode(content) as Map<String, dynamic>;
+      final rawMap = config['phoneme_id_map'] as Map<String, dynamic>?;
+      if (rawMap != null) {
+        _phonemeIdMap = rawMap.map((key, value) {
+          if (value is List) {
+            return MapEntry(key, List<int>.from(value.map((e) => e as int)));
+          }
+          return MapEntry(key, [value as int]);
+        });
+      }
+    } catch (e) {
+      _diagnostics.log('TTS_ENGINE', 'Failed to load phoneme map: $e', level: LogLevel.warning);
+    }
   }
 
   Future<bool> isModelReady() async {
@@ -139,12 +165,14 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
         // Giới hạn scale trong khoảng an toàn (0.6x đến 2.0x tốc độ)
         lengthScale = lengthScale.clamp(0.6, 2.0);
 
+        final idsData = kIsWeb ? Int32List.fromList(phonemeIds) : Int64List.fromList(phonemeIds);
         inputOrt = await OrtValue.fromList(
-          Int64List.fromList(phonemeIds),
+          idsData,
           [1, phonemeIds.length],
         );
 
-        inputLengthsOrt = await OrtValue.fromList(Int64List.fromList([phonemeIds.length]), [1]);
+        final lenData = kIsWeb ? Int32List.fromList([phonemeIds.length]) : Int64List.fromList([phonemeIds.length]);
+        inputLengthsOrt = await OrtValue.fromList(lenData, [1]);
 
         // noiseScale=0.667, lengthScale=X, noiseW=0.8
         scalesOrt = await OrtValue.fromList(Float32List.fromList([0.667, lengthScale, 0.8]), [3]);

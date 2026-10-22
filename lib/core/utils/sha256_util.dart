@@ -1,10 +1,13 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' as io;
 import 'dart:math';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 
 abstract final class Sha256Util {
-  static Future<String> computeFileHash(File file) async {
+  static Future<String> computeFileHash(dynamic file) async {
+    if (kIsWeb) return ''; // Filesystem access not available on Web
+    if (file is! io.File) return '';
     if (!await file.exists()) return '';
     final stream = file.openRead();
     final digest = await sha256.bind(stream).first;

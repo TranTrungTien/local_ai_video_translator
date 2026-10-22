@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/errors/app_exception.dart';
@@ -78,6 +79,18 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
   }
 
   Uri _normalizeInput(String input) {
+    if (kIsWeb) {
+      if (input.startsWith('blob:') || input.startsWith('data:')) {
+        return Uri.parse(input);
+      }
+      var value = input;
+      // Handle the case where user might paste a full URL or just a domain
+      if (!value.contains('://') && !value.startsWith('blob:')) {
+        value = 'https://$value';
+      }
+      return Uri.parse(value);
+    }
+
     if (input.startsWith('/') ||
         input.startsWith('file://') ||
         input.startsWith('content://')) {
@@ -107,13 +120,15 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
       throw const ResolutionException('Maximum iframe depth reached.');
     }
 
-    if (currentUri.scheme == 'file' || currentUri.scheme == 'content') {
-      diagnostics.add('Local file resolved.');
+    if (currentUri.scheme == 'file' ||
+        currentUri.scheme == 'content' ||
+        currentUri.scheme == 'blob') {
+      diagnostics.add('Local or Blob source resolved.');
       return ResolvedSource(
         input: originInput,
         normalizedUri: currentUri,
         finalUri: currentUri,
-        kind: MediaKind.localFile,
+        kind: currentUri.scheme == 'blob' ? MediaKind.progressive : MediaKind.localFile,
         playbackMode: PlaybackMode.native,
         discoveryMethod: DiscoveryMethod.localFile,
         capability: SourceCapability.full,
@@ -319,6 +334,26 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     CancelToken cancelToken,
     RequestContext requestContext,
   ) async {
+    if (kIsWeb) {
+      // On Web, many sites block JS from reading the response body via CORS.
+      // We try a simplified probe or skip if it's not essential.
+      try {
+        final response = await _dio.get<ResponseBody>(
+          uri.toString(),
+          options: Options(
+            responseType: ResponseType.stream,
+            headers: requestContext.headers,
+          ),
+          cancelToken: cancelToken,
+        );
+        return _readProbeResponse(response);
+      } catch (e) {
+        // Fallback for Web CORS: If it's a known URL that usually has a video,
+        // we might return an empty body but valid URI.
+        return (finalUri: uri, contentType: 'text/html', body: '');
+      }
+    }
+
     final response = await _dio.get<ResponseBody>(
       uri.toString(),
       options: Options(
@@ -328,17 +363,25 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
       cancelToken: cancelToken,
     );
 
+    return _readProbeResponse(response);
+  }
+
+  Future<({Uri finalUri, String contentType, String body})> _readProbeResponse(
+    Response<ResponseBody> response,
+  ) async {
     final contentType =
         response.headers.value(Headers.contentTypeHeader)?.toLowerCase() ?? '';
     final finalUri = response.realUri;
 
     // Check if it's likely a direct media stream
-    final isMedia = contentType.startsWith('video/') ||
+    final isMedia =
+        contentType.startsWith('video/') ||
         contentType.contains('mpegurl') ||
         contentType.contains('dash+xml') ||
         contentType.contains('application/octet-stream');
 
-    final isManifest = contentType.contains('mpegurl') || contentType.contains('dash+xml');
+    final isManifest =
+        contentType.contains('mpegurl') || contentType.contains('dash+xml');
 
     if (isMedia && !isManifest) {
       // It's a video file, don't read body to avoid OOM
@@ -364,11 +407,7 @@ class SourceResolverRepositoryImpl implements SourceResolverRepository {
     final bodyBytes = builder.takeBytes();
     final body = utf8.decode(bodyBytes, allowMalformed: true);
 
-    return (
-      finalUri: finalUri,
-      contentType: contentType,
-      body: body,
-    );
+    return (finalUri: finalUri, contentType: contentType, body: body);
   }
 
 

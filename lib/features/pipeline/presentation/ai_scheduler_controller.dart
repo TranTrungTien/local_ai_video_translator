@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
 import '../../../core/constants/app_constants.dart';
 import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../../core/network/dio_provider.dart';
 import '../../../core/utils/cancellation_token.dart';
-import '../../audio/data/pcm_audio_extractor.dart';
+import '../../audio/data/web_audio_extractor.dart';
 import '../../audio/data/ffmpeg_audio_extractor.dart';
+import '../../audio/data/pcm_audio_extractor.dart';
 import '../../audio/data/vad_engine.dart';
 import '../../settings/data/model_manager_repository.dart';
 import '../../source_resolver/domain/entities/resolved_source.dart';
@@ -917,6 +918,10 @@ final ttsEngineProvider = Provider<TextToSpeechEngine>((ref) {
 
 final pcmAudioExtractorProvider = Provider<PcmAudioExtractor>((ref) {
   final diagnostics = ref.watch(diagnosticsServiceProvider);
+
+  if (kIsWeb) {
+    return WebPcmAudioExtractor(diagnostics);
+  }
 
   // Đối với video/file, FFmpeg là lựa chọn tốt nhất nhờ bộ lọc xử lý âm thanh mạnh mẽ.
   // NativePcmAudioExtractor chỉ nên dùng cho capture hệ thống (Embedded).

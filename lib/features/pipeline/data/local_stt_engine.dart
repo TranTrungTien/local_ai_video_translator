@@ -1,5 +1,8 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
+import 'dart:io' show Platform, File;
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
@@ -44,49 +47,55 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
   Future<void> _initIfNeeded() async {
     if (_encoderSession != null && _decoderSession != null) return;
     try {
-      final encoderFile = await _modelRepository.getModelFile(
-        modelId,
-        'encoder_model_quantized.onnx',
-      );
-      final decoderFile = await _modelRepository.getModelFile(
-        modelId,
-        'decoder_model_merged_quantized.onnx',
-      );
+      if (kIsWeb) {
+        // Trên Web: Load model từ bytes (sẽ được fetch từ URL)
+        final encoderBytes = await _modelRepository.getModelFileBytes(modelId, 'encoder_model_quantized.onnx');
+        final decoderBytes = await _modelRepository.getModelFileBytes(modelId, 'decoder_model_merged_quantized.onnx');
+        final vocabBytes = await _modelRepository.getModelFileBytes(modelId, 'vocab.json');
 
-      final dir = await _modelRepository.getModelDir(modelId);
-      final vocabFile = File('${dir.path}/vocab.json');
+        if (encoderBytes == null || decoderBytes == null) {
+          throw ModelDownloadException('Whisper models missing. Please download them.');
+        }
 
-      if (Platform.environment.containsKey('FLUTTER_TEST')) {
-        _diagnostics.log('STT', 'Test environment detected, bypassing file checks');
-      } else if (!await encoderFile.exists() || !await decoderFile.exists()) {
-        throw ModelDownloadException('Whisper models (encoder/decoder) missing. Please download them in settings.');
-      }
+        if (vocabBytes != null) {
+          _tokenizer = await SimpleTokenizer.load(utf8.decode(vocabBytes));
+        }
 
-      if (await vocabFile.exists()) {
-        _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
-        _diagnostics.log('STT', 'Tokenizer loaded successfully');
+        final sessionOptions = OrtSessionOptions();
+
+        final encoderBlob = web.Blob([encoderBytes.toJS].toJS, web.BlobPropertyBag(type: 'application/octet-stream'));
+        final decoderBlob = web.Blob([decoderBytes.toJS].toJS, web.BlobPropertyBag(type: 'application/octet-stream'));
+        final encoderUrl = web.URL.createObjectURL(encoderBlob);
+        final decoderUrl = web.URL.createObjectURL(decoderBlob);
+
+        try {
+          _encoderSession = await OnnxRuntime().createSession(encoderUrl, options: sessionOptions);
+          _decoderSession = await OnnxRuntime().createSession(decoderUrl, options: sessionOptions);
+        } finally {
+          web.URL.revokeObjectURL(encoderUrl);
+          web.URL.revokeObjectURL(decoderUrl);
+        }
       } else {
-        _diagnostics.log('STT', 'Warning: vocab.json not found at ${vocabFile.path}', level: LogLevel.warning);
+        // Native: Sử dụng File path như cũ
+        final encoderFile = await _modelRepository.getModelFile(modelId, 'encoder_model_quantized.onnx');
+        final decoderFile = await _modelRepository.getModelFile(modelId, 'decoder_model_merged_quantized.onnx');
+        final dir = await _modelRepository.getModelDir(modelId);
+        final vocabFile = File('${dir.path}/vocab.json');
+
+        if (!await encoderFile.exists() || !await decoderFile.exists()) {
+          throw ModelDownloadException('Whisper models missing.');
+        }
+
+        if (await vocabFile.exists()) {
+          _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
+        }
+
+        final sessionOptions = OrtSessionOptions();
+        _encoderSession = await OnnxRuntime().createSession(encoderFile.path, options: sessionOptions);
+        _decoderSession = await OnnxRuntime().createSession(decoderFile.path, options: sessionOptions);
       }
 
-      if (Platform.environment.containsKey('FLUTTER_TEST')) {
-        _diagnostics.log('STT', 'Test environment detected, bypassing ONNX runtime initialization');
-        return;
-      }
-
-      final sessionOptions = OrtSessionOptions();
-      _encoderSession = await OnnxRuntime().createSession(
-        encoderFile.path,
-        options: sessionOptions,
-      );
-      _decoderSession = await OnnxRuntime().createSession(
-        decoderFile.path,
-        options: sessionOptions,
-      );
-
-      _diagnostics.log('STT', 'Whisper Engine (Encoder+Decoder) initialized');
-      _diagnostics.log('STT', 'Decoder Inputs: ${_decoderSession?.inputNames}');
-      _diagnostics.log('STT', 'Decoder Outputs: ${_decoderSession?.outputNames}');
+      _diagnostics.log('STT', 'Whisper Engine initialized');
     } catch (e) {
       _diagnostics.log('STT', 'Init failure: $e', level: LogLevel.error);
       throw ModelContractException('Failed to initialize Whisper: $e');
@@ -292,8 +301,10 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
     try {
       if (hasEncoderMask) {
         final seqLen = audioFeatures.shape[1];
+        final maskData = kIsWeb ? Int32List(seqLen) : Int64List(seqLen);
+        maskData.fillRange(0, seqLen, 1);
         encoderAttentionMask = await OrtValue.fromList(
-          Int64List(seqLen)..fillRange(0, seqLen, 1),
+          maskData,
           [1, seqLen],
         );
       }
@@ -318,15 +329,16 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
         final bool useCache = i > 0;
         final currentTokens = useCache ? [tokens.last] : tokens;
 
+        final idsData = kIsWeb ? Int32List.fromList(currentTokens) : Int64List.fromList(currentTokens);
         final inputIdsOrt = await OrtValue.fromList(
-          Int64List.fromList(currentTokens),
+          idsData,
           [1, currentTokens.length],
         );
 
-        final useCacheBranchOrt = await OrtValue.fromList([useCache], [1]);
-        if (i == 0) {
-          _diagnostics.log('STT', 'use_cache_branch tensor type: ${useCacheBranchOrt.dataType}');
-        }
+        // 'use_cache_branch' is usually bool or int64. On Web, passing bool might work
+        // depending on how flutter_onnxruntime handles it. If it fails, we might need Int32List.
+        final useCacheData = kIsWeb ? Int32List.fromList([useCache ? 1 : 0]) : [useCache];
+        final useCacheBranchOrt = await OrtValue.fromList(useCacheData, [1]);
 
         final inputs = {
           'input_ids': inputIdsOrt,

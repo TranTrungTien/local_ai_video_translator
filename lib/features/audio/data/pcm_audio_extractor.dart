@@ -1,5 +1,4 @@
 import 'dart:async';
-
 import 'package:flutter/services.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';

@@ -1,8 +1,11 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:io' as io;
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';
@@ -68,7 +71,26 @@ class LocalVadEngine implements VoiceActivityDetector {
 
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
-    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (kIsWeb) {
+      final modelBytes = await _modelRepository.getModelFileBytes(modelId, 'silero_vad.onnx');
+      if (modelBytes == null) {
+        throw ModelDownloadException('Silero VAD model missing. Please download it in settings.');
+      }
+      final blob = web.Blob([modelBytes.toJS].toJS, web.BlobPropertyBag(type: 'application/octet-stream'));
+      final modelUrl = web.URL.createObjectURL(blob);
+      final sessionOptions = OrtSessionOptions();
+      try {
+        _session = await OnnxRuntime().createSession(
+          modelUrl,
+          options: sessionOptions,
+        );
+      } finally {
+        web.URL.revokeObjectURL(modelUrl);
+      }
+      return;
+    }
+
+    if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) return;
 
     final modelFile = await _modelRepository.getModelFile(
       modelId,
@@ -256,7 +278,13 @@ class LocalVadEngine implements VoiceActivityDetector {
   }
 
   Future<bool> _isSpeechData(Uint8List bytes, int sampleRate) async {
-    if (Platform.environment.containsKey('FLUTTER_TEST')) return _isSpeechEnergy(bytes);
+    // Silero VAD requires int64 sr input which is not supported by the current Web ONNX plugin.
+    // However, the current Web ONNX runtime bridge has issues handling int64/BigInt64Array
+    // for this specific model, leading to "Unexpected input data type" errors.
+    // As a workaround for Web, we fall back to a robust energy-based VAD.
+    if (kIsWeb || (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST'))) {
+      return _isSpeechEnergy(bytes);
+    }
     final session = _session;
     if (session == null || _onnxBroken) return _isSpeechEnergy(bytes);
 
@@ -271,7 +299,8 @@ class LocalVadEngine implements VoiceActivityDetector {
       _fillPcm16ToFloat32Buffer(bytes, _windowFloatBuffer, offset: _contextSize);
 
       inputOrt = await OrtValue.fromList(_windowFloatBuffer, [1, _windowFloatBuffer.length]);
-      srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), []); // Scalar shape []
+      // On Native, Int64List is supported and expected by Silero VAD.
+      srOrt = await OrtValue.fromList(Int64List.fromList([sampleRate]), []);
       stateOrt = await OrtValue.fromList(_state, [2, 1, _stateSize]);
 
       final inputs = {'input': inputOrt, 'sr': srOrt, 'state': stateOrt};
@@ -341,12 +370,14 @@ class LocalVadEngine implements VoiceActivityDetector {
 
   bool _isSpeechEnergy(Uint8List bytes) {
     final samples = bytes.buffer.asInt16List();
+    if (samples.isEmpty) return false;
     double sumSquare = 0;
     for (final s in samples) {
       sumSquare += s * s;
     }
     final energy = sqrt(sumSquare / samples.length);
-    return energy >= 250.0;
+    // Giảm ngưỡng từ 250 xuống 100 để nhạy hơn trên Web
+    return energy >= 100.0;
   }
 
   void dispose() {

@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-
+import 'dart:io' as io;
+import 'dart:js_interop';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:web/web.dart' as web;
 
 import '../../../core/network/dio_provider.dart';
 import '../../../core/utils/sha256_util.dart';
@@ -212,31 +214,109 @@ class ModelManagerRepository {
     return null;
   }
 
-  Future<Directory> get _modelsDir async {
+  Future<io.Directory> get _modelsDir async {
+    if (kIsWeb) throw UnsupportedError('File system not available on Web');
     final docs = await getApplicationDocumentsDirectory();
-    final dir = Directory('${docs.path}/models');
+    final dir = io.Directory('${docs.path}/models');
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
 
-  Future<Directory> getModelDir(String modelId) async {
+  Future<io.Directory> getModelDir(String modelId) async {
+    if (kIsWeb) throw UnsupportedError('File system not available on Web');
     final root = await _modelsDir;
-    final dir = Directory('${root.path}/$modelId');
+    final dir = io.Directory('${root.path}/$modelId');
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
 
-  Future<File> getModelFile(String modelId, String fileName) async {
+  Future<Uint8List?> getModelFileBytes(String modelId, String fileName) async {
+    if (kIsWeb) {
+      // Check Cache API first
+      final cachedBytes = await _getCachedModelWeb(modelId, fileName);
+      if (cachedBytes != null) return cachedBytes;
+
+      final manifest = manifestById(modelId);
+      if (manifest == null) return null;
+      final fileSpec = manifest.files.firstWhere((f) => f.name == fileName, orElse: () => throw Exception('File not in manifest'));
+
+      try {
+        final response = await _dio.get<List<int>>(
+          fileSpec.url,
+          options: Options(responseType: ResponseType.bytes),
+        );
+        final bytes = Uint8List.fromList(response.data!);
+
+        // Cache for next time
+        await _cacheModelWeb(modelId, fileName, bytes);
+
+        return bytes;
+      } catch (e) {
+        debugPrint('Web model fetch failed: $e');
+        return null;
+      }
+    }
+    final file = await getModelFile(modelId, fileName);
+    if (await file.exists()) {
+      return file.readAsBytes();
+    }
+    return null;
+  }
+
+  Future<void> _cacheModelWeb(String modelId, String fileName, Uint8List bytes) async {
+    try {
+      final cache = await web.window.caches.open('ai-models').toDart;
+      final url = 'models/$modelId/$fileName';
+      final response = web.Response(bytes.toJS, web.ResponseInit(
+        headers: {'Content-Type': 'application/octet-stream'}.jsify() as web.HeadersInit,
+      ));
+      await cache.put(url.toJS, response).toDart;
+    } catch (e) {
+      debugPrint('Web model caching failed: $e');
+    }
+  }
+
+  Future<Uint8List?> _getCachedModelWeb(String modelId, String fileName) async {
+    try {
+      final cache = await web.window.caches.open('ai-models').toDart;
+      final url = 'models/$modelId/$fileName';
+      final response = await cache.match(url.toJS).toDart;
+      if (response != null) {
+        final arrayBuffer = await response.arrayBuffer().toDart;
+        return arrayBuffer.toDart.asUint8List();
+      }
+    } catch (e) {
+      debugPrint('Web model cache retrieval failed: $e');
+    }
+    return null;
+  }
+
+  Future<io.File> getModelFile(String modelId, String fileName) async {
+    if (kIsWeb) throw UnsupportedError('File system not available on Web');
     final dir = await getModelDir(modelId);
-    return File('${dir.path}/$fileName');
+    return io.File('${dir.path}/$fileName');
   }
 
   Future<bool> isModelDownloaded(String modelId) async {
     final manifest = manifestById(modelId);
     if (manifest == null) return false;
 
+    if (kIsWeb) {
+      try {
+        final cache = await web.window.caches.open('ai-models').toDart;
+        for (final f in manifest.files) {
+          final url = 'models/$modelId/${f.name}';
+          final match = await cache.match(url.toJS).toDart;
+          if (match == null) return false;
+        }
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
     final dir = await getModelDir(modelId);
-    final marker = File('${dir.path}/$_readyMarker');
+    final marker = io.File('${dir.path}/$_readyMarker');
     if (!await marker.exists()) return false;
 
     try {
@@ -247,7 +327,7 @@ class ModelManagerRepository {
     }
 
     for (final f in manifest.files) {
-      final file = File('${dir.path}/${f.name}');
+      final file = io.File('${dir.path}/${f.name}');
       if (!await file.exists()) return false;
       if (await file.length() == 0) return false;
     }
@@ -257,10 +337,47 @@ class ModelManagerRepository {
   Future<void> downloadModel(AiModelManifest manifest) async {
     if (!_active.add(manifest.id)) return;
 
+    if (kIsWeb) {
+      try {
+        var completedBytes = 0;
+        for (final spec in manifest.files) {
+          _emit(ModelDownloadProgress(
+            modelId: manifest.id,
+            state: ModelDownloadState.downloading,
+            downloadedBytes: completedBytes,
+            totalBytes: manifest.totalBytes,
+            currentFile: spec.name,
+          ));
+
+          final bytes = await getModelFileBytes(manifest.id, spec.name);
+          if (bytes == null) throw Exception('Download failed for ${spec.name}');
+          completedBytes += spec.bytes;
+        }
+
+        _emit(ModelDownloadProgress(
+          modelId: manifest.id,
+          state: ModelDownloadState.ready,
+          downloadedBytes: manifest.totalBytes,
+          totalBytes: manifest.totalBytes,
+        ));
+      } catch (e) {
+        _emit(ModelDownloadProgress(
+          modelId: manifest.id,
+          state: ModelDownloadState.failed,
+          downloadedBytes: 0,
+          totalBytes: manifest.totalBytes,
+          errorMessage: e.toString(),
+        ));
+      } finally {
+        _active.remove(manifest.id);
+      }
+      return;
+    }
+
     var completedBytes = 0;
     try {
       final dir = await getModelDir(manifest.id);
-      final marker = File('${dir.path}/$_readyMarker');
+      final marker = io.File('${dir.path}/$_readyMarker');
       if (await marker.exists()) await marker.delete();
 
       for (final spec in manifest.files) {
@@ -303,11 +420,11 @@ class ModelManagerRepository {
   Future<void> _downloadFile({
     required AiModelManifest manifest,
     required ModelFile spec,
-    required Directory dir,
+    required dynamic dir,
     required int completedBytes,
   }) async {
-    final target = File('${dir.path}/${spec.name}');
-    final tmp = File('${target.path}.tmp');
+    final target = io.File('${dir.path}/${spec.name}');
+    final tmp = io.File('${target.path}.tmp');
 
     if (await target.exists()) {
       try {
@@ -340,7 +457,7 @@ class ModelManagerRepository {
               _emit(ModelDownloadProgress(
                 modelId: manifest.id,
                 state: ModelDownloadState.downloading,
-                downloadedBytes: completedBytes + existing + received,
+                downloadedBytes: completedBytes + existing + received.toInt(),
                 totalBytes: manifest.totalBytes,
                 currentFile: spec.name,
               ));
@@ -365,7 +482,7 @@ class ModelManagerRepository {
     }
   }
 
-  Future<void> _verify(File file, ModelFile spec) async {
+  Future<void> _verify(io.File file, ModelFile spec) async {
     final length = await file.length();
     if (length == 0) throw ModelIntegrityException('${spec.name}: file rỗng');
 
@@ -396,6 +513,25 @@ class ModelManagerRepository {
   Future<void> setEnabledModel(String modelId) async {}
 
   Future<void> deleteModel(String modelId) async {
+    if (kIsWeb) {
+      try {
+        final cache = await web.window.caches.open('ai-models').toDart;
+        final manifest = manifestById(modelId);
+        if (manifest != null) {
+          for (final f in manifest.files) {
+            await cache.delete('models/$modelId/${f.name}'.toJS).toDart;
+          }
+        }
+      } catch (_) {}
+      _emit(ModelDownloadProgress(
+        modelId: modelId,
+        state: ModelDownloadState.notDownloaded,
+        downloadedBytes: 0,
+        totalBytes: 0,
+      ));
+      return;
+    }
+
     final dir = await getModelDir(modelId);
     if (await dir.exists()) {
       await dir.delete(recursive: true);

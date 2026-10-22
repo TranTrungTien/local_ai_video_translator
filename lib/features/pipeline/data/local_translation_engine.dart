@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show Platform, Directory, File;
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
@@ -62,60 +64,82 @@ class LocalTranslationEngine implements TranslationEngine {
   Future<void> _ensureInitialized() async {
     if (_encoderSession != null && _decoderSession != null && _tokenizer != null) return;
 
-    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) return;
 
-    final encoderFile = await _modelRepository.getModelFile(
-      modelId,
-      'encoder_model_quantized.onnx',
-    );
-    final decoderFile = await _modelRepository.getModelFile(
-      modelId,
-      'decoder_model_merged_quantized.onnx',
-    );
+    if (kIsWeb) {
+      final encoderBytes = await _modelRepository.getModelFileBytes(modelId, 'encoder_model_quantized.onnx');
+      final decoderBytes = await _modelRepository.getModelFileBytes(modelId, 'decoder_model_merged_quantized.onnx');
+      final vocabBytes = await _modelRepository.getModelFileBytes(modelId, 'vocab.json');
+      final configBytes = await _modelRepository.getModelFileBytes(modelId, 'config.json');
 
-    if (!await encoderFile.exists() || !await decoderFile.exists()) {
-      throw ModelDownloadException('Opus-MT models (encoder/decoder) missing. Please download them in settings.');
+      if (encoderBytes == null || decoderBytes == null || vocabBytes == null) {
+        throw ModelDownloadException('Opus-MT models missing. Please download them.');
+      }
+
+      _tokenizer = await SimpleTokenizer.load(utf8.decode(vocabBytes));
+      if (configBytes != null) {
+        _parseSpecialTokens(utf8.decode(configBytes));
+      }
+
+      final sessionOptions = OrtSessionOptions();
+
+      final encoderBlob = web.Blob([encoderBytes.toJS].toJS, web.BlobPropertyBag(type: 'application/octet-stream'));
+      final decoderBlob = web.Blob([decoderBytes.toJS].toJS, web.BlobPropertyBag(type: 'application/octet-stream'));
+      final encoderUrl = web.URL.createObjectURL(encoderBlob);
+      final decoderUrl = web.URL.createObjectURL(decoderBlob);
+
+      try {
+        _encoderSession = await OnnxRuntime().createSession(encoderUrl, options: sessionOptions);
+        _decoderSession = await OnnxRuntime().createSession(decoderUrl, options: sessionOptions);
+      } finally {
+        web.URL.revokeObjectURL(encoderUrl);
+        web.URL.revokeObjectURL(decoderUrl);
+      }
+    } else {
+      final encoderFile = await _modelRepository.getModelFile(modelId, 'encoder_model_quantized.onnx');
+      final decoderFile = await _modelRepository.getModelFile(modelId, 'decoder_model_merged_quantized.onnx');
+
+      if (!await encoderFile.exists() || !await decoderFile.exists()) {
+        throw ModelDownloadException('Opus-MT models missing.');
+      }
+
+      final dir = await _modelRepository.getModelDir(modelId);
+      final vocabFile = File('${dir.path}/vocab.json');
+      if (!await vocabFile.exists()) {
+        throw ModelContractException('Opus-MT vocab.json missing.');
+      }
+      _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
+
+      await _loadSpecialTokens(dir);
+
+      final sessionOptions = OrtSessionOptions();
+      _encoderSession = await OnnxRuntime().createSession(encoderFile.path, options: sessionOptions);
+      _decoderSession = await OnnxRuntime().createSession(decoderFile.path, options: sessionOptions);
     }
 
-    final dir = await _modelRepository.getModelDir(modelId);
-    final vocabFile = File('${dir.path}/vocab.json');
-    if (!await vocabFile.exists()) {
-      // Không có tokenizer thì không dịch được; báo rõ thay vì tạo lại session mỗi lần gọi.
-      throw ModelContractException('Opus-MT vocab.json missing. Please re-download the translation model.');
-    }
-    _tokenizer = await SimpleTokenizer.load(await vocabFile.readAsString());
-
-    await _loadSpecialTokens(dir);
-
-    final sessionOptions = OrtSessionOptions();
-    _encoderSession = await OnnxRuntime().createSession(
-      encoderFile.path,
-      options: sessionOptions,
-    );
-    _decoderSession = await OnnxRuntime().createSession(
-      decoderFile.path,
-      options: sessionOptions,
-    );
-
-    _diagnostics.log('TRANSLATION_ENGINE', 'Opus-MT initialized (start=$_startToken, eos=$_eosToken)');
-    _diagnostics.log('TRANSLATION_ENGINE', 'Decoder Inputs: ${_decoderSession?.inputNames}');
-    _diagnostics.log('TRANSLATION_ENGINE', 'Decoder Outputs: ${_decoderSession?.outputNames}');
+    _diagnostics.log('TRANSLATION_ENGINE', 'Opus-MT initialized');
   }
 
-  /// Đọc decoder_start_token_id / eos_token_id từ config.json nếu có.
-  Future<void> _loadSpecialTokens(Directory dir) async {
+  void _parseSpecialTokens(String configContent) {
     try {
-      final configFile = File('${dir.path}/config.json');
-      if (!await configFile.exists()) return;
-      final json = jsonDecode(await configFile.readAsString());
+      final json = jsonDecode(configContent);
       if (json is! Map) return;
-
       final start = json['decoder_start_token_id'] ?? json['pad_token_id'];
       final eos = json['eos_token_id'];
       if (start is int) _startToken = start;
       if (eos is int) _eosToken = eos;
     } catch (e) {
-      _diagnostics.log('TRANSLATION_ENGINE', 'Could not read config.json, using defaults: $e', level: LogLevel.warning);
+      _diagnostics.log('TRANSLATION_ENGINE', 'Could not parse config: $e', level: LogLevel.warning);
+    }
+  }
+
+  Future<void> _loadSpecialTokens(Directory dir) async {
+    try {
+      final configFile = File('${dir.path}/config.json');
+      if (!await configFile.exists()) return;
+      _parseSpecialTokens(await configFile.readAsString());
+    } catch (e) {
+      _diagnostics.log('TRANSLATION_ENGINE', 'Could not read config.json: $e', level: LogLevel.warning);
     }
   }
 
@@ -249,13 +273,15 @@ class LocalTranslationEngine implements TranslationEngine {
       }
       _diagnostics.log('TRANSLATION_ENGINE', 'src="$clean" ids=$inputIds');
 
+      final idsData = kIsWeb ? Int32List.fromList(inputIds) : Int64List.fromList(inputIds);
       inputOrt = await OrtValue.fromList(
-        Int64List.fromList(inputIds),
+        idsData,
         [1, inputIds.length],
       );
 
+      final maskData = kIsWeb ? Int32List.fromList(List.filled(inputIds.length, 1)) : Int64List.fromList(List.filled(inputIds.length, 1));
       attentionMaskOrt = await OrtValue.fromList(
-        Int64List.fromList(List.filled(inputIds.length, 1)),
+        maskData,
         [1, inputIds.length],
       );
 
@@ -352,8 +378,9 @@ class LocalTranslationEngine implements TranslationEngine {
         final bool useCache = i > 0;
         final currentTokens = useCache ? [tokens.last] : tokens;
 
+        final idsData = kIsWeb ? Int32List.fromList(currentTokens) : Int64List.fromList(currentTokens);
         final inputIdsOrt = await OrtValue.fromList(
-          Int64List.fromList(currentTokens),
+          idsData,
           [1, currentTokens.length],
         );
         final useCacheBranchOrt = await OrtValue.fromList([useCache], [1]);

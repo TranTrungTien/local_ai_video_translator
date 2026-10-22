@@ -1,6 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' if (dart.library.html) 'dart:html';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:web/web.dart' as web;
 
 import '../domain/cache_invalidation.dart';
 import '../domain/media_identity.dart';
@@ -81,7 +83,8 @@ class AiCacheRepository {
   final CacheInvalidationPolicy _invalidationPolicy;
   final Map<String, AiCachedRecord> _memoryCache = {};
 
-  Future<Directory> get _cacheDir async {
+  Future<dynamic> get _cacheDir async {
+    if (kIsWeb) return null;
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/ai_cache');
     if (!await dir.exists()) {
@@ -95,26 +98,7 @@ class AiCacheRepository {
     required List<TimedTextSegment> segments,
   }) async {
     final fingerprint = identity.generateFingerprint();
-    final jsonStr = jsonEncode({
-      'fingerprint': fingerprint,
-      'sttVersion': _invalidationPolicy.sttModelVersion,
-      'translationVersion': _invalidationPolicy.translationModelVersion,
-      'targetLanguage': _invalidationPolicy.targetLanguage,
-      'pipelineVersion': _invalidationPolicy.pipelineVersion,
-      'createdAt': DateTime.now().toIso8601String(),
-      'sizeBytes': segments.fold<int>(0, (sum, s) => sum + s.text.length * 2),
-      'segments': segments
-          .map(
-            (s) => {
-              'startMs': s.start.inMilliseconds,
-              'endMs': s.end.inMilliseconds,
-              'text': s.text,
-              'language': s.language,
-            },
-          )
-          .toList(),
-    });
-
+    final now = DateTime.now();
     final record = AiCachedRecord(
       fingerprint: fingerprint,
       sttVersion: _invalidationPolicy.sttModelVersion,
@@ -122,18 +106,31 @@ class AiCacheRepository {
       targetLanguage: _invalidationPolicy.targetLanguage,
       pipelineVersion: _invalidationPolicy.pipelineVersion,
       segments: segments,
-      createdAt: DateTime.now(),
-      sizeBytes: jsonStr.length,
+      createdAt: now,
+      sizeBytes: segments.fold<int>(0, (sum, s) => sum + s.text.length * 2),
     );
 
     _memoryCache[fingerprint] = record;
 
+    if (kIsWeb) {
+      await _saveWebRecord(fingerprint, record.toJson());
+      return;
+    }
+
     try {
-      final dir = await _cacheDir;
+      final dir = await _cacheDir as Directory;
       final file = File('${dir.path}/$fingerprint.json');
-      await file.writeAsString(jsonStr);
+      await file.writeAsString(jsonEncode(record.toJson()));
     } catch (_) {
       // Disk write fallback
+    }
+  }
+
+  Future<void> _saveWebRecord(String key, Map<String, dynamic> data) async {
+    try {
+      web.window.localStorage.setItem('ai_cache_$key', jsonEncode(data));
+    } catch (e) {
+      debugPrint('Web cache save failed: $e');
     }
   }
 
@@ -152,8 +149,25 @@ class AiCacheRepository {
       }
     }
 
+    if (kIsWeb) {
+      final webData = await _getWebRecord(fingerprint);
+      if (webData != null) {
+        final rec = AiCachedRecord.fromJson(webData);
+        if (_invalidationPolicy.isCompatible(
+          cachedSttVersion: rec.sttVersion,
+          cachedTranslationVersion: rec.translationVersion,
+          cachedTargetLang: rec.targetLanguage,
+          cachedPipelineVersion: rec.pipelineVersion,
+        )) {
+          _memoryCache[fingerprint] = rec;
+          return rec.segments;
+        }
+      }
+      return null;
+    }
+
     try {
-      final dir = await _cacheDir;
+      final dir = await _cacheDir as Directory;
       final file = File('${dir.path}/$fingerprint.json');
       if (await file.exists()) {
         final content = await file.readAsString();
@@ -177,14 +191,25 @@ class AiCacheRepository {
     return null;
   }
 
+  Future<Map<String, dynamic>?> _getWebRecord(String key) async {
+    try {
+      final data = web.window.localStorage.getItem('ai_cache_$key');
+      if (data != null) return jsonDecode(data) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('Web cache read failed: $e');
+    }
+    return null;
+  }
+
   Future<int> getTotalCacheSizeBytes() async {
+    if (kIsWeb) return 0;
     // Storage quota is a disk quota. Memory records mirror the same entries and
     // must not be counted again, otherwise eviction happens too early.
     int total = 0;
 
     try {
       final dir = await _cacheDir;
-      if (await dir.exists()) {
+      if (dir != null && await dir.exists()) {
         await for (final entity in dir.list()) {
           if (entity is File) {
             total += await entity.length();
@@ -200,11 +225,20 @@ class AiCacheRepository {
     final fingerprint = identity.generateFingerprint();
     _memoryCache.remove(fingerprint);
 
+    if (kIsWeb) {
+      try {
+        web.window.localStorage.removeItem('ai_cache_$fingerprint');
+      } catch (_) {}
+      return;
+    }
+
     try {
       final dir = await _cacheDir;
-      final file = File('${dir.path}/$fingerprint.json');
-      if (await file.exists()) {
-        await file.delete();
+      if (dir != null) {
+        final file = File('${dir.path}/$fingerprint.json');
+        if (await file.exists()) {
+          await file.delete();
+        }
       }
     } catch (_) {}
   }
@@ -212,9 +246,25 @@ class AiCacheRepository {
   Future<void> clearAll() async {
     _memoryCache.clear();
 
+    if (kIsWeb) {
+      try {
+        final keysToRemove = <String>[];
+        for (int i = 0; i < web.window.localStorage.length; i++) {
+          final key = web.window.localStorage.key(i);
+          if (key != null && key.startsWith('ai_cache_')) {
+            keysToRemove.add(key);
+          }
+        }
+        for (final key in keysToRemove) {
+          web.window.localStorage.removeItem(key);
+        }
+      } catch (_) {}
+      return;
+    }
+
     try {
       final dir = await _cacheDir;
-      if (await dir.exists()) {
+      if (dir != null && await dir.exists()) {
         await dir.delete(recursive: true);
         await dir.create(recursive: true);
       }
@@ -225,12 +275,13 @@ class AiCacheRepository {
   Future<void> enforceBoundedStorage({
     int maxSizeBytes = 100 * 1024 * 1024,
   }) async {
+    if (kIsWeb) return;
     final currentSize = await getTotalCacheSizeBytes();
     if (currentSize <= maxSizeBytes) return;
 
     try {
       final dir = await _cacheDir;
-      if (await dir.exists()) {
+      if (dir != null && await dir.exists()) {
         final files = <File>[];
         await for (final entity in dir.list()) {
           if (entity is File) {

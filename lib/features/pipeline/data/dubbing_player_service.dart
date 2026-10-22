@@ -1,8 +1,10 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:typed_data';
+import 'dart:io' as io;
+import 'dart:js_interop';
+import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:web/web.dart' as web;
 import '../domain/dub_segment.dart';
 import 'dubbing_repository.dart';
 
@@ -17,7 +19,7 @@ class DubbingPlayerService {
   final DubbingRepository _repository;
   final Player _player = Player();
   final _duckingController = StreamController<bool>.broadcast();
-  File? _tempWavFile;
+  io.File? _tempWavFile;
   bool _isEnabled = true;
 
   Duration? _lastPlayedStart;
@@ -56,9 +58,17 @@ class DubbingPlayerService {
     try {
       final wavBytes = _createWavContainer(segment.generatedAudio);
 
+      if (kIsWeb) {
+        final blob = web.Blob([wavBytes.toJS].toJS, web.BlobPropertyBag(type: 'audio/wav'));
+        final url = web.URL.createObjectURL(blob);
+        await _player.open(Media(url));
+        await _player.play();
+        return;
+      }
+
       // Ghi ra file tạm thay vì dùng Base64 để tiết kiệm RAM
       final tempDir = await getTemporaryDirectory();
-      _tempWavFile = File('${tempDir.path}/dub_temp.wav');
+      _tempWavFile = io.File('${tempDir.path}/dub_temp.wav');
       await _tempWavFile!.writeAsBytes(wavBytes, flush: true);
 
       await _player.open(Media(_tempWavFile!.path));

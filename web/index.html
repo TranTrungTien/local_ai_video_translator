@@ -31,8 +31,19 @@
 
   <title>local_ai_video_translator</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- ONNX Runtime Web -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 </head>
 <body>
+  <script>
+    // Configure ONNX Runtime to look for WASM files in the correct location
+    // By default, we point to the CDN to avoid manual WASM management in the repo for now,
+    // but in production, these should be hosted locally in web/assets/
+    if (typeof ort !== 'undefined') {
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+    }
+  </script>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader

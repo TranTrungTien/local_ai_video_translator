@@ -1,6 +1,8 @@
-import 'dart:io';
+import 'dart:async';
+import 'dart:io' as io;
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
@@ -43,6 +45,8 @@ class SubtitleRepositoryImpl
       );
       tracks.addAll(dashTracks);
     }
+
+    if (kIsWeb) return tracks;
 
     if (source.kind == MediaKind.localFile || source.uri.isScheme('file')) {
       final sidecarTracks = await _checkLocalSidecarSubtitles(source.uri);
@@ -176,7 +180,7 @@ class SubtitleRepositoryImpl
       '.srt',
       '.ttml',
     ]) {
-      final subFile = File('$basePath$ext');
+      final subFile = io.File('$basePath$ext');
       try {
         if (await subFile.exists()) {
           final content = await subFile.readAsString();
@@ -219,7 +223,8 @@ class SubtitleRepositoryImpl
     try {
       String body;
       if (track.uri.isScheme('file')) {
-        body = await File(track.uri.toFilePath()).readAsString();
+        if (kIsWeb) throw UnsupportedError('File access not supported on Web');
+        body = await io.File(track.uri.toFilePath()).readAsString();
       } else {
         final response = await _dio.get<String>(
           track.uri.toString(),

@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:js_interop';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:web/web.dart' as web;
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
@@ -49,8 +52,20 @@ class _HomePageState extends ConsumerState<HomePage> {
     setState(() => _isPickingFile = true);
 
     try {
-      final result = await FilePicker.platform.pickFiles(type: FileType.video);
-      final path = result?.files.firstOrNull?.path;
+      final result = await FilePicker.platform.pickFiles(type: FileType.video, withData: kIsWeb);
+      final file = result?.files.firstOrNull;
+      if (file == null) return;
+
+      String? path;
+      if (kIsWeb) {
+        if (file.bytes != null) {
+          final blob = web.Blob([file.bytes!.toJS].toJS);
+          path = web.URL.createObjectURL(blob);
+        }
+      } else {
+        path = file.path;
+      }
+
       if (path != null) await _resolve(path);
     } catch (e) {
       debugPrint('Error picking file: $e');
@@ -69,13 +84,26 @@ class _HomePageState extends ConsumerState<HomePage> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['srt', 'vtt', 'ass'],
+        withData: kIsWeb,
       );
-      final path = result?.files.firstOrNull?.path;
+      final file = result?.files.firstOrNull;
+      if (file == null) return;
+
+      String? path;
+      if (kIsWeb) {
+        if (file.bytes != null) {
+          final blob = web.Blob([file.bytes!.toJS].toJS);
+          path = web.URL.createObjectURL(blob);
+        }
+      } else {
+        path = file.path;
+      }
+
       if (path != null && mounted) {
         ref.read(sourceResolverControllerProvider.notifier).setManualSubtitle(path);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Đã chọn phụ đề: ${result?.files.first.name}'),
+            content: Text('Đã chọn phụ đề: ${file.name}'),
           ),
         );
       }
