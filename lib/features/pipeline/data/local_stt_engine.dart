@@ -1,9 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, File;
-import 'package:web/web.dart' as web;
-import 'dart:js_interop';
 import 'dart:typed_data';
+import 'dart:io' as io;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import '../../../core/diagnostics/diagnostics_service.dart';
@@ -12,6 +10,12 @@ import '../../../core/utils/cancellation_token.dart';
 import '../../../core/utils/tokenizer.dart';
 import '../../../core/utils/mel_processor.dart';
 import '../domain/ai_pipeline.dart';
+
+// Conditionally import web libraries
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'package:web/web.dart' as web;
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'dart:js_interop';
 
 class LocalSpeechToTextEngine implements SpeechToTextEngine {
   LocalSpeechToTextEngine(this._modelRepository, this._diagnostics);
@@ -47,9 +51,10 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
   Future<void> _initIfNeeded() async {
     if (_encoderSession != null && _decoderSession != null) return;
     try {
+      if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) return;
       if (kIsWeb) {
-        // Trên Web: Load model từ bytes (sẽ được fetch từ URL)
-        final encoderBytes = await _modelRepository.getModelFileBytes(modelId, 'encoder_model_quantized.onnx');
+      // Logic khởi tạo cho Web
+      final encoderBytes = await _modelRepository.getModelFileBytes(modelId, 'encoder_model_quantized.onnx');
         final decoderBytes = await _modelRepository.getModelFileBytes(modelId, 'decoder_model_merged_quantized.onnx');
         final vocabBytes = await _modelRepository.getModelFileBytes(modelId, 'vocab.json');
 
@@ -80,7 +85,7 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
         final encoderFile = await _modelRepository.getModelFile(modelId, 'encoder_model_quantized.onnx');
         final decoderFile = await _modelRepository.getModelFile(modelId, 'decoder_model_merged_quantized.onnx');
         final dir = await _modelRepository.getModelDir(modelId);
-        final vocabFile = File('${dir.path}/vocab.json');
+        final vocabFile = io.File('${dir.path}/vocab.json');
 
         if (!await encoderFile.exists() || !await decoderFile.exists()) {
           throw ModelDownloadException('Whisper models missing.');
@@ -145,7 +150,7 @@ class LocalSpeechToTextEngine implements SpeechToTextEngine {
 
       cancellationToken.throwIfCancelled();
 
-      if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) {
         final totalSamples = chunks.fold<int>(0, (sum, c) => sum + c.bytes.length ~/ 2);
         final duration = Duration(microseconds: (totalSamples * 1000000) ~/ 16000);
         return [

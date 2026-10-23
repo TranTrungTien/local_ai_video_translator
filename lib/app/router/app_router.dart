@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -8,14 +9,23 @@ import '../../features/settings/presentation/model_manager_page.dart';
 import '../../features/source_resolver/domain/entities/resolved_source.dart';
 import '../../features/source_resolver/presentation/source_analysis_page.dart';
 import '../../features/pipeline/presentation/ai_pipeline_progress_page.dart';
+import '../../features/debug/presentation/web_ai_test_screen.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/',
+    debugLogDiagnostics: true,
+    errorBuilder: (context, state) => Scaffold(
+      body: Center(child: Text('Page not found: ${state.uri}')),
+    ),
     routes: [
       GoRoute(
         path: '/',
         builder: (context, state) => const MainShellPage(),
+      ),
+      GoRoute(
+        path: '/debug',
+        builder: (context, state) => const WebAiTestScreen(),
       ),
       GoRoute(
         path: '/analysis',
@@ -28,7 +38,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/pipeline',
         builder: (context, state) => const AiPipelineProgressPage(
           initialProgress: 0.68,
-          title: 'Dịch Video TikTok #102',
+          title: 'Dịch Video',
         ),
       ),
       GoRoute(

@@ -1,16 +1,21 @@
 import 'dart:async';
 import 'dart:io' as io;
-import 'package:web/web.dart' as web;
-import 'dart:js_interop';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
+import '../../../core/utils/foundation_stub.dart'
+    if (dart.library.ui) 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';
 import '../../pipeline/domain/ai_pipeline.dart';
 import '../../settings/data/model_manager_repository.dart';
+
+// Conditionally import web libraries
+import 'vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'package:web/web.dart' as web;
+import 'vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'dart:js_interop';
 
 class SpeechSegment {
   const SpeechSegment({
@@ -90,7 +95,12 @@ class LocalVadEngine implements VoiceActivityDetector {
       return;
     }
 
-    if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (!kIsWeb) {
+      // Chỉ kiểm tra môi trường test trên Native
+      try {
+        if (io.Platform.environment.containsKey('FLUTTER_TEST')) return;
+      } catch (_) {}
+    }
 
     final modelFile = await _modelRepository.getModelFile(
       modelId,

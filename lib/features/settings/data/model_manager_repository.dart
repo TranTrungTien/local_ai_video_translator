@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
-import 'dart:js_interop';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:web/web.dart' as web;
 
 import '../../../core/network/dio_provider.dart';
 import '../../../core/utils/sha256_util.dart';
 import '../domain/model_manifest.dart';
+
+// Conditionally import web libraries
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'package:web/web.dart' as web;
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'dart:js_interop';
 
 enum ModelDownloadState { notDownloaded, downloading, ready, failed }
 
@@ -232,24 +236,40 @@ class ModelManagerRepository {
 
   Future<Uint8List?> getModelFileBytes(String modelId, String fileName) async {
     if (kIsWeb) {
-      // Check Cache API first
       final cachedBytes = await _getCachedModelWeb(modelId, fileName);
-      if (cachedBytes != null) return cachedBytes;
+      if (cachedBytes != null) {
+        debugPrint('Using cached model: $modelId/$fileName');
+        return cachedBytes;
+      }
 
       final manifest = manifestById(modelId);
       if (manifest == null) return null;
-      final fileSpec = manifest.files.firstWhere((f) => f.name == fileName, orElse: () => throw Exception('File not in manifest'));
+      final fileSpec = manifest.files.firstWhere((f) => f.name == fileName,
+          orElse: () => throw Exception('File not in manifest'));
 
       try {
+        debugPrint('Downloading model to browser cache: ${fileSpec.url}');
         final response = await _dio.get<List<int>>(
           fileSpec.url,
-          options: Options(responseType: ResponseType.bytes),
+          options: Options(
+            responseType: ResponseType.bytes,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+            },
+          ),
+          onReceiveProgress: (received, total) {
+            _emit(ModelDownloadProgress(
+              modelId: modelId,
+              state: ModelDownloadState.downloading,
+              downloadedBytes: received,
+              totalBytes: total > 0 ? total : fileSpec.bytes,
+              currentFile: fileName,
+            ));
+          },
         );
+
         final bytes = Uint8List.fromList(response.data!);
-
-        // Cache for next time
         await _cacheModelWeb(modelId, fileName, bytes);
-
         return bytes;
       } catch (e) {
         debugPrint('Web model fetch failed: $e');

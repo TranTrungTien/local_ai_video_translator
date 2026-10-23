@@ -7,3 +7,10 @@ linter:
     prefer_final_locals: true
     prefer_single_quotes: true
     use_super_parameters: true
+
+analyzer:
+  errors:
+    avoid_print: ignore
+  exclude:
+    - "lib/core/utils/foundation_stub.dart"
+

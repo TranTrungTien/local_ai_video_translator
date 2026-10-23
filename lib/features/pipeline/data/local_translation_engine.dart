@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, Directory, File;
-import 'package:web/web.dart' as web;
-import 'dart:js_interop';
+import 'dart:io' as io;
 import 'dart:math' as math;
+import '../../../core/utils/foundation_stub.dart' as stub;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'package:web/web.dart' as web;
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'dart:js_interop';
 
 import 'performance_monitor.dart';
 import '../../../core/diagnostics/diagnostics_service.dart';
@@ -64,7 +68,7 @@ class LocalTranslationEngine implements TranslationEngine {
   Future<void> _ensureInitialized() async {
     if (_encoderSession != null && _decoderSession != null && _tokenizer != null) return;
 
-    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) return;
 
     if (kIsWeb) {
       final encoderBytes = await _modelRepository.getModelFileBytes(modelId, 'encoder_model_quantized.onnx');
@@ -104,7 +108,7 @@ class LocalTranslationEngine implements TranslationEngine {
       }
 
       final dir = await _modelRepository.getModelDir(modelId);
-      final vocabFile = File('${dir.path}/vocab.json');
+      final vocabFile = io.File('${dir.path}/vocab.json');
       if (!await vocabFile.exists()) {
         throw ModelContractException('Opus-MT vocab.json missing.');
       }
@@ -133,9 +137,9 @@ class LocalTranslationEngine implements TranslationEngine {
     }
   }
 
-  Future<void> _loadSpecialTokens(Directory dir) async {
+  Future<void> _loadSpecialTokens(io.Directory dir) async {
     try {
-      final configFile = File('${dir.path}/config.json');
+      final configFile = io.File('${dir.path}/config.json');
       if (!await configFile.exists()) return;
       _parseSpecialTokens(await configFile.readAsString());
     } catch (e) {
@@ -248,7 +252,7 @@ class LocalTranslationEngine implements TranslationEngine {
     if (clean.isEmpty) return '';
 
     if (_encoderSession == null || _decoderSession == null) {
-      if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) {
         if (clean == 'Hello world') return 'Xin chào';
         if (clean == 'Welcome to episode 1' || clean == 'Welcome to the show') return 'Chào mừng bạn đến với chương trình';
         if (clean == 'Thank you') return 'Cảm ơn bạn rất nhiều';
@@ -383,7 +387,8 @@ class LocalTranslationEngine implements TranslationEngine {
           idsData,
           [1, currentTokens.length],
         );
-        final useCacheBranchOrt = await OrtValue.fromList([useCache], [1]);
+        final useCacheData = kIsWeb ? Int32List.fromList([useCache ? 1 : 0]) : [useCache];
+        final useCacheBranchOrt = await OrtValue.fromList(useCacheData, [1]);
 
         final inputs = <String, OrtValue>{
           'input_ids': inputIdsOrt,
@@ -440,7 +445,7 @@ class LocalTranslationEngine implements TranslationEngine {
             for (int r = 1; r <= 2; r++) {
               final start = tokens.length - n * (r + 1);
               final prev = tokens.sublist(start, start + n);
-              if (!listEquals(tail, prev)) {
+              if (!stub.listEquals(tail, prev)) {
                 isLooping = false;
                 break;
               }

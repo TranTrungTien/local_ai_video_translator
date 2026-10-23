@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_components.dart';
@@ -269,6 +270,19 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
               ),
             ),
             const SizedBox(height: 20),
+
+            // Nút Debug ẩn (Dành cho nhà phát triển)
+            Center(
+              child: TextButton.icon(
+                onPressed: () => context.push('/debug'),
+                icon: const Icon(Icons.bug_report_rounded, size: 16, color: AppColors.textMuted),
+                label: const Text(
+                  'Mở AI Web Debugger',
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                ),
+              ),
+            ),
+            const SizedBox(height: 40),
           ],
         ),
       ),

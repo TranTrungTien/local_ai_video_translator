@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, File;
-import 'package:web/web.dart' as web;
-import 'dart:js_interop';
+import 'dart:io' as io;
 import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'package:web/web.dart' as web;
+import '../../audio/data/vad_engine_web_stub.dart'
+    if (dart.library.js_interop) 'dart:js_interop';
 import 'performance_monitor.dart';
 
 import '../../../core/diagnostics/diagnostics_service.dart';
@@ -41,7 +43,7 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
   Future<void> _ensureInitialized() async {
     if (_session != null) return;
 
-    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (!kIsWeb && io.Platform.environment.containsKey('FLUTTER_TEST')) return;
 
     final sessionOptions = OrtSessionOptions();
 
@@ -70,7 +72,7 @@ class LocalTextToSpeechEngine implements TextToSpeechEngine {
       }
 
       final dir = await _modelRepository.getModelDir(modelId);
-      final configFile = File('${dir.path}/$modelFileName.json');
+      final configFile = io.File('${dir.path}/$modelFileName.json');
 
       if (await configFile.exists()) {
         _parseConfig(await configFile.readAsString());
